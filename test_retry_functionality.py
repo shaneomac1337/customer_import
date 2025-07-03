@@ -74,7 +74,7 @@ def simulate_failed_import():
     importer = BulkCustomerImporter(
         api_url="https://invalid-url-for-testing.com/api",  # Invalid URL
         auth_token="INVALID_TOKEN",
-        gk_passport="INVALID_PASSPORT",
+        # gk_passport is now hardcoded in constructor
         batch_size=1,
         max_workers=1,
         delay_between_requests=0.1,

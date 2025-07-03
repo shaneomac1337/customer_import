@@ -25,7 +25,7 @@ class BulkImportGUI:
         # Variables
         self.api_url = tk.StringVar(value="https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers")
         self.auth_token = tk.StringVar()
-        self.gk_passport = tk.StringVar()
+        self.gk_passport = tk.StringVar(value="1.1:CiMg46zV+88yKOOMxZPwMjIDMDAxOg5idXNpbmVzc1VuaXRJZBIKCAISBnVzZXJJZBoSCAIaCGNsaWVudElkIgR3c0lkIhoaGGI6Y3VzdC5jdXN0b21lci5pbXBvcnRlcg==")
         self.batch_size = tk.IntVar(value=70)
         self.max_workers = tk.IntVar(value=3)
         self.delay_between_requests = tk.DoubleVar(value=0.5)
@@ -111,9 +111,9 @@ class BulkImportGUI:
         ttk.Button(self.manual_auth_frame, text="Show", command=lambda: self.toggle_password(self.auth_entry)).grid(row=0, column=2, padx=5)
 
         ttk.Label(self.manual_auth_frame, text="GK-Passport:").grid(row=1, column=0, sticky=tk.W, pady=2)
-        self.passport_entry = ttk.Entry(self.manual_auth_frame, textvariable=self.gk_passport, width=60, show="*")
+        self.passport_entry = ttk.Entry(self.manual_auth_frame, textvariable=self.gk_passport, width=60, show="*", state="readonly")
         self.passport_entry.grid(row=1, column=1, sticky=tk.EW, pady=2, padx=(10, 5))
-        ttk.Button(self.manual_auth_frame, text="Show", command=lambda: self.toggle_password(self.passport_entry)).grid(row=1, column=2, padx=5)
+        ttk.Label(self.manual_auth_frame, text="(Hardcoded)", foreground="gray").grid(row=1, column=2, padx=5)
 
         # Automatic authentication fields
         self.auto_auth_frame = ttk.Frame(api_group)
@@ -128,9 +128,9 @@ class BulkImportGUI:
         ttk.Button(self.auto_auth_frame, text="Show", command=lambda: self.toggle_password(self.password_entry)).grid(row=1, column=2, padx=5)
 
         ttk.Label(self.auto_auth_frame, text="GK-Passport:").grid(row=2, column=0, sticky=tk.W, pady=2)
-        self.auto_passport_entry = ttk.Entry(self.auto_auth_frame, textvariable=self.gk_passport, width=60, show="*")
+        self.auto_passport_entry = ttk.Entry(self.auto_auth_frame, textvariable=self.gk_passport, width=60, show="*", state="readonly")
         self.auto_passport_entry.grid(row=2, column=1, sticky=tk.EW, pady=2, padx=(10, 5))
-        ttk.Button(self.auto_auth_frame, text="Show", command=lambda: self.toggle_password(self.auto_passport_entry)).grid(row=2, column=2, padx=5)
+        ttk.Label(self.auto_auth_frame, text="(Hardcoded)", foreground="gray").grid(row=2, column=2, padx=5)
 
         # Configure column weights for proper resizing
         self.manual_auth_frame.columnconfigure(1, weight=1)
@@ -462,8 +462,8 @@ class BulkImportGUI:
             # Create a temporary importer to test authentication
             if self.use_auto_auth.get():
                 # Test automatic authentication
-                if not self.username.get() or not self.password.get() or not self.gk_passport.get():
-                    messagebox.showerror("Error", "Please enter Username, Password, and GK-Passport!")
+                if not self.username.get() or not self.password.get():
+                    messagebox.showerror("Error", "Please enter Username and Password!")
                     return
 
                 importer = BulkCustomerImporter(
@@ -475,8 +475,8 @@ class BulkImportGUI:
                 )
             else:
                 # Test manual authentication
-                if not self.auth_token.get() or not self.gk_passport.get():
-                    messagebox.showerror("Error", "Please enter Auth Token and GK-Passport!")
+                if not self.auth_token.get():
+                    messagebox.showerror("Error", "Please enter Auth Token!")
                     return
 
                 importer = BulkCustomerImporter(
@@ -521,12 +521,12 @@ class BulkImportGUI:
         
         # Validate authentication based on mode
         if self.use_auto_auth.get():
-            if not self.username.get() or not self.password.get() or not self.gk_passport.get():
-                messagebox.showerror("Error", "Please enter Username, Password, and GK-Passport!")
+            if not self.username.get() or not self.password.get():
+                messagebox.showerror("Error", "Please enter Username and Password!")
                 return
         else:
-            if not self.auth_token.get() or not self.gk_passport.get():
-                messagebox.showerror("Error", "Please enter Auth Token and GK-Passport!")
+            if not self.auth_token.get():
+                messagebox.showerror("Error", "Please enter Auth Token!")
                 return
         
         if self.import_running:
@@ -572,6 +572,10 @@ class BulkImportGUI:
         """Run the import process (in separate thread)"""
         try:
             # Create importer with progress callback based on authentication mode
+            # Generate unique failed customers filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            failed_customers_file = f"failed_customers_{timestamp}.json"
+
             if self.use_auto_auth.get():
                 importer = BulkCustomerImporter(
                     api_url=self.api_url.get(),
@@ -583,7 +587,8 @@ class BulkImportGUI:
                     progress_callback=self.handle_api_response,
                     username=self.username.get(),
                     password=self.password.get(),
-                    use_auto_auth=True
+                    use_auto_auth=True,
+                    failed_customers_file=failed_customers_file
                 )
             else:
                 importer = BulkCustomerImporter(
@@ -595,7 +600,8 @@ class BulkImportGUI:
                     delay_between_requests=self.delay_between_requests.get(),
                     max_retries=self.max_retries.get(),
                     progress_callback=self.handle_api_response,
-                    use_auto_auth=False
+                    use_auto_auth=False,
+                    failed_customers_file=failed_customers_file
                 )
             
             self.current_importer = importer
@@ -659,7 +665,25 @@ class BulkImportGUI:
                 self.stats_labels['rate'].config(text=f"{rate:.1f}")
             
             self.log_message(f"Import completed! {result.get('successful_customers', 0)} customers imported successfully")
-            
+
+            # Get failed customers summary if available
+            failed_summary = ""
+            if self.current_importer:
+                try:
+                    failed_info = self.current_importer.get_failed_customers_summary()
+                    if failed_info['total_failed'] > 0:
+                        failed_summary = f"\n\n❌ Failed Customers Details:\n"
+                        failed_summary += f"Total failed: {failed_info['total_failed']}\n"
+                        failed_summary += f"Failed customers file: {failed_info['failed_customers_file']}\n"
+
+                        # Show error types
+                        if 'error_types' in failed_info:
+                            failed_summary += "\nError breakdown:\n"
+                            for error, count in failed_info['error_types'].items():
+                                failed_summary += f"  • {error}: {count}\n"
+                except Exception as e:
+                    failed_summary = f"\n\nNote: Could not retrieve failed customer details: {e}"
+
             # Show completion dialog
             messagebox.showinfo(
                 "Import Complete",
@@ -669,6 +693,7 @@ class BulkImportGUI:
                 f"Failed: {result.get('failed_customers', 0):,}\n"
                 f"Success rate: {success_rate}\n"
                 f"Duration: {duration:.1f} seconds"
+                f"{failed_summary}"
             )
         else:
             self.log_message("Import completed with no results")
@@ -868,9 +893,23 @@ Check the RETRY_INSTRUCTIONS.md file in the retry directory for detailed instruc
         self.api_responses_text.config(state=tk.NORMAL)
 
         if response_data['type'] == 'batch_success':
-            self.api_responses_text.insert(tk.END, f"[{timestamp}] ✅ SUCCESS - Batch {response_data['batch_id']}\n")
+            failed_count = response_data.get('failed_customers_count', 0)
+            status_icon = "⚠️" if failed_count > 0 else "✅"
+
+            self.api_responses_text.insert(tk.END, f"[{timestamp}] {status_icon} SUCCESS - Batch {response_data['batch_id']}\n")
             self.api_responses_text.insert(tk.END, f"Status Code: {response_data['status_code']}\n")
             self.api_responses_text.insert(tk.END, f"Customers: {response_data['customers_count']}\n")
+
+            if failed_count > 0:
+                self.api_responses_text.insert(tk.END, f"❌ Failed Customers: {failed_count}\n")
+                failed_customers = response_data.get('failed_customers', [])
+                if failed_customers:
+                    self.api_responses_text.insert(tk.END, f"Failed Customer Details (first 5):\n")
+                    for i, customer in enumerate(failed_customers[:5], 1):
+                        self.api_responses_text.insert(tk.END, f"  {i}. ID: {customer.get('customerId', 'Unknown')}\n")
+                        self.api_responses_text.insert(tk.END, f"     Username: {customer.get('username', 'Unknown')}\n")
+                        self.api_responses_text.insert(tk.END, f"     Error: {customer.get('error', 'Unknown error')}\n")
+
             self.api_responses_text.insert(tk.END, f"Response Data: {json.dumps(response_data['response_data'], indent=2)}\n")
             self.api_responses_text.insert(tk.END, f"Headers: {json.dumps(response_data['response_headers'], indent=2)}\n")
             self.api_responses_text.insert(tk.END, "-" * 80 + "\n\n")

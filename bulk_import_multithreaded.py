@@ -14,7 +14,7 @@ class BulkCustomerImporter:
     def __init__(self,
                  api_url: str,
                  auth_token: str = None,
-                 gk_passport: str = "",
+                 gk_passport: str = "1.1:CiMg46zV+88yKOOMxZPwMjIDMDAxOg5idXNpbmVzc1VuaXRJZBIKCAISBnVzZXJJZBoSCAIaCGNsaWVudElkIgR3c0lkIhoaGGI6Y3VzdC5jdXN0b21lci5pbXBvcnRlcg==",
                  batch_size: int = 70,
                  max_workers: int = 5,
                  delay_between_requests: float = 1.0,
@@ -23,7 +23,9 @@ class BulkCustomerImporter:
                  # New authentication parameters
                  username: str = "coop_sweden",
                  password: str = "coopsverige123",
-                 use_auto_auth: bool = False):
+                 use_auto_auth: bool = False,
+                 # Failed customers tracking
+                 failed_customers_file: str = "failed_customers.json"):
 
         self.api_url = api_url
         self.batch_size = batch_size
@@ -31,6 +33,22 @@ class BulkCustomerImporter:
         self.delay_between_requests = delay_between_requests
         self.max_retries = max_retries
         self.progress_callback = progress_callback
+
+        # Create failed_customers directory if it doesn't exist
+        failed_customers_dir = "failed_customers"
+        os.makedirs(failed_customers_dir, exist_ok=True)
+
+        # Set failed customers file path in the dedicated folder
+        if not os.path.dirname(failed_customers_file):
+            # If no directory specified, put it in failed_customers folder
+            self.failed_customers_file = os.path.join(failed_customers_dir, failed_customers_file)
+        else:
+            # If directory already specified, use as-is
+            self.failed_customers_file = failed_customers_file
+
+        # Failed customers tracking
+        self.failed_customers = []
+        self.failed_customers_lock = threading.Lock()
 
         # Authentication setup
         if use_auto_auth:
@@ -134,6 +152,107 @@ class BulkCustomerImporter:
             batch = customers[i:i + self.batch_size]
             batches.append(batch)
         return batches
+
+    def _parse_api_response_for_failures(self, response_data, batch_customers):
+        """Parse API response to extract failed customers"""
+        failed_customers = []
+
+        try:
+            if isinstance(response_data, str):
+                response_json = json.loads(response_data)
+            else:
+                response_json = response_data
+
+            # Look for customer results in the response - check both 'data' and 'customers' arrays
+            customer_results = []
+            if 'data' in response_json:
+                customer_results = response_json['data']
+            elif 'customers' in response_json:
+                customer_results = response_json['customers']
+
+            for customer_result in customer_results:
+                if customer_result.get('result') == 'FAILED':
+                    # Find the original customer data
+                    customer_id = customer_result.get('customerId')
+                    username = customer_result.get('username')
+
+                    # Try to match with original batch data
+                    original_customer = None
+                    for customer in batch_customers:
+                        if (customer.get('personalNumber') in username if username else False) or \
+                           (customer.get('customerCards', [{}])[0].get('cardNumber') == customer_id):
+                            original_customer = customer
+                            break
+
+                    failed_customer = {
+                        'customerId': customer_id,
+                        'username': username,
+                        'result': customer_result.get('result'),
+                        'error': customer_result.get('error', 'Unknown error'),
+                        'timestamp': datetime.now().isoformat(),
+                        'originalData': original_customer
+                    }
+                    failed_customers.append(failed_customer)
+
+            # Also check for any other failure indicators in the response
+            if 'errors' in response_json:
+                for error in response_json['errors']:
+                    failed_customer = {
+                        'customerId': error.get('customerId', 'Unknown'),
+                        'username': error.get('username', 'Unknown'),
+                        'result': 'FAILED',
+                        'error': error.get('message', str(error)),
+                        'timestamp': datetime.now().isoformat(),
+                        'originalData': None
+                    }
+                    failed_customers.append(failed_customer)
+
+        except Exception as e:
+            logging.error(f"Error parsing API response for failures: {e}")
+
+        return failed_customers
+
+    def _save_failed_customers(self, failed_customers):
+        """Save failed customers to file"""
+        if not failed_customers:
+            return
+
+        with self.failed_customers_lock:
+            self.failed_customers.extend(failed_customers)
+
+            # Save to file
+            try:
+                with open(self.failed_customers_file, 'w', encoding='utf-8') as f:
+                    json.dump(self.failed_customers, f, indent=2, ensure_ascii=False)
+                logging.info(f"Saved {len(failed_customers)} failed customers to {self.failed_customers_file}")
+            except Exception as e:
+                logging.error(f"Error saving failed customers to file: {e}")
+
+    def get_failed_customers_summary(self):
+        """Get summary of failed customers"""
+        with self.failed_customers_lock:
+            total_failed = len(self.failed_customers)
+            if total_failed == 0:
+                return {
+                    'total_failed': 0,
+                    'failed_customers_file': self.failed_customers_file,
+                    'summary': 'No failed customers'
+                }
+
+            # Group by error type
+            error_types = {}
+            for customer in self.failed_customers:
+                error = customer.get('error', 'Unknown error')
+                if error not in error_types:
+                    error_types[error] = 0
+                error_types[error] += 1
+
+            return {
+                'total_failed': total_failed,
+                'failed_customers_file': self.failed_customers_file,
+                'error_types': error_types,
+                'recent_failures': self.failed_customers[-5:] if total_failed > 0 else []
+            }
     
     def rate_limit(self):
         """Implement rate limiting between requests"""
@@ -179,8 +298,8 @@ class BulkCustomerImporter:
                 response = requests.post(
                     self.api_url,
                     headers=headers,
-                    json=payload,
-                    timeout=60  # 60 second timeout
+                    json=payload
+                    # No timeout - let API handle its own timeout logic
                 )
                 
                 if response.status_code == 200:
@@ -195,6 +314,12 @@ class BulkCustomerImporter:
                     except json.JSONDecodeError:
                         response_data = {'raw_response': response.text}
 
+                    # Check for failed customers within successful response
+                    failed_customers = self._parse_api_response_for_failures(response_data, batch)
+                    if failed_customers:
+                        self._save_failed_customers(failed_customers)
+                        self.logger.warning(f"⚠️ Batch {batch_id} completed but {len(failed_customers)} customers failed")
+
                     self.logger.info(f"✅ Batch {batch_id} completed successfully - {self.completed_batches}/{self.total_batches}")
 
                     # Send progress update with API response details
@@ -203,9 +328,11 @@ class BulkCustomerImporter:
                             'type': 'batch_success',
                             'batch_id': batch_id,
                             'customers_count': len(batch),
+                            'failed_customers_count': len(failed_customers) if failed_customers else 0,
                             'response_data': response_data,
                             'status_code': response.status_code,
-                            'response_headers': dict(response.headers)
+                            'response_headers': dict(response.headers),
+                            'failed_customers': failed_customers[:5] if failed_customers else []  # Show first 5 failures
                         })
 
                     return {
@@ -261,23 +388,7 @@ class BulkCustomerImporter:
                         # Wait before retry
                         time.sleep(2 ** attempt)  # Exponential backoff
                         
-            except requests.exceptions.Timeout:
-                self.logger.warning(f"⏰ Batch {batch_id} timed out (attempt {attempt + 1})")
-                if attempt == self.max_retries - 1:
-                    with self.lock:
-                        self.failed_batches.append({
-                            'batch_id': batch_id,
-                            'customers': batch,
-                            'error': 'Request timeout'
-                        })
-                    return {
-                        'batch_id': batch_id,
-                        'status': 'failed',
-                        'error': 'Request timeout'
-                    }
-                else:
-                    time.sleep(2 ** attempt)
-                    
+            # Timeout exception handling removed - API handles its own timeouts
             except Exception as e:
                 self.logger.error(f"❌ Batch {batch_id} error (attempt {attempt + 1}): {e}")
                 if attempt == self.max_retries - 1:
@@ -496,13 +607,12 @@ def main():
     # Configuration
     API_URL = "https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers"
     AUTH_TOKEN = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Im9hdXRoMi5rZXkuMSJ9..."  # Your full token
-    GK_PASSPORT = "1.1:CiMg46zV+88yKOOMxZPwMjIDMDAxOg5idXNpbmVzc1VuaXRJZBIKCAISBnVzZXJJZBoSCAIaCGNsaWVudElkIgR3c0lkIhoaGGI6Y3VzdC5jdXN0b21lci5pbXBvcnRlcg=="
-    
-    # Initialize importer
+    # GK_PASSPORT is now hardcoded in the constructor
+
+    # Initialize importer (GK-Passport is hardcoded)
     importer = BulkCustomerImporter(
         api_url=API_URL,
         auth_token=AUTH_TOKEN,
-        gk_passport=GK_PASSPORT,
         batch_size=70,          # Sweet spot batch size
         max_workers=3,          # Start conservative with 3 threads
         delay_between_requests=0.5,  # 500ms between requests

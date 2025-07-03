@@ -16,10 +16,10 @@ import logging
 class AuthenticationManager:
     """Manages OAuth2 authentication with automatic token refresh"""
     
-    def __init__(self, 
+    def __init__(self,
                  username: str = "coop_sweden",
                  password: str = "coopsverige123",
-                 gk_passport: str = "",
+                 gk_passport: str = "1.1:CiMg46zV+88yKOOMxZPwMjIDMDAxOg5idXNpbmVzc1VuaXRJZBIKCAISBnVzZXJJZBoSCAIaCGNsaWVudElkIgR3c0lkIhoaGGI6Y3VzdC5jdXN0b21lci5pbXBvcnRlcg==",
                  auth_url: str = "https://prod.cse.cloud4retail.co/auth-service/tenants/001/oauth/token",
                  basic_auth: str = "bGF1bmNocGFkOk5iV295MWxES3Y4N1JBQXdOUHJF"):
         """
@@ -216,10 +216,8 @@ if __name__ == "__main__":
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
     
-    # Test authentication manager
-    auth_manager = AuthenticationManager(
-        gk_passport="1.1:CiMg46zV+88yKOOMxZPwMjIDMDAxOg5idXNpbmVzc1VuaXRJZBIKCAISBnVzZXJJZBoSCAIaCGNsaWVudElkIgR3c0lkIhoaGGI6Y3VzdC5jdXN0b21lci5pbXBvcnRlcg=="
-    )
+    # Test authentication manager (GK-Passport now hardcoded in constructor)
+    auth_manager = AuthenticationManager()
     
     print("Testing Authentication Manager...")
     print("=" * 50)
