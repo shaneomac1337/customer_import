@@ -8,26 +8,45 @@ import os
 import logging
 from typing import List, Dict, Any
 import queue
+from auth_manager import AuthenticationManager
 
 class BulkCustomerImporter:
     def __init__(self,
                  api_url: str,
-                 auth_token: str,
-                 gk_passport: str,
+                 auth_token: str = None,
+                 gk_passport: str = "",
                  batch_size: int = 70,
                  max_workers: int = 5,
                  delay_between_requests: float = 1.0,
                  max_retries: int = 3,
-                 progress_callback=None):
-        
+                 progress_callback=None,
+                 # New authentication parameters
+                 username: str = "coop_sweden",
+                 password: str = "coopsverige123",
+                 use_auto_auth: bool = False):
+
         self.api_url = api_url
-        self.auth_token = auth_token
-        self.gk_passport = gk_passport
         self.batch_size = batch_size
         self.max_workers = max_workers
         self.delay_between_requests = delay_between_requests
         self.max_retries = max_retries
         self.progress_callback = progress_callback
+
+        # Authentication setup
+        if use_auto_auth:
+            # Use automatic authentication manager
+            self.auth_manager = AuthenticationManager(
+                username=username,
+                password=password,
+                gk_passport=gk_passport
+            )
+            self.auth_token = None  # Will be managed automatically
+            self.gk_passport = gk_passport
+        else:
+            # Use manual token (legacy mode)
+            self.auth_manager = None
+            self.auth_token = auth_token
+            self.gk_passport = gk_passport
         
         # Setup logging
         logging.basicConfig(
@@ -49,6 +68,54 @@ class BulkCustomerImporter:
         # Rate limiting
         self.last_request_time = 0
         self.rate_limit_lock = threading.Lock()
+
+    def test_authentication(self) -> Dict[str, Any]:
+        """Test authentication (works with both manual and automatic modes)"""
+        try:
+            if self.auth_manager:
+                # Test automatic authentication
+                return self.auth_manager.test_authentication()
+            else:
+                # Test manual token
+                headers = {
+                    'Authorization': f'Bearer {self.auth_token}',
+                    'GK-Passport': self.gk_passport,
+                    'Content-Type': 'application/json'
+                }
+
+                # Simple test - just check if headers are valid format
+                if not self.auth_token:
+                    return {
+                        'success': False,
+                        'error': 'No auth token provided',
+                        'message': 'Manual authentication failed'
+                    }
+
+                return {
+                    'success': True,
+                    'token_preview': f"{self.auth_token[:20]}..." if self.auth_token else None,
+                    'message': 'Manual authentication configured'
+                }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e),
+                'message': 'Authentication test failed'
+            }
+
+    def get_auth_info(self) -> Dict[str, Any]:
+        """Get information about current authentication setup"""
+        if self.auth_manager:
+            info = self.auth_manager.get_token_info()
+            info['mode'] = 'automatic'
+            return info
+        else:
+            return {
+                'mode': 'manual',
+                'has_token': bool(self.auth_token),
+                'token_preview': f"{self.auth_token[:20]}..." if self.auth_token else None
+            }
     
     def load_customer_data(self, file_path: str) -> List[Dict[Any, Any]]:
         """Load customer data from JSON file"""
@@ -80,15 +147,28 @@ class BulkCustomerImporter:
     
     def send_batch(self, batch: List[Dict[Any, Any]], batch_id: int) -> Dict[str, Any]:
         """Send a single batch to the API"""
-        
+
         # Rate limiting
         self.rate_limit()
-        
-        headers = {
-            'Authorization': f'Bearer {self.auth_token}',
-            'GK-Passport': self.gk_passport,
-            'Content-Type': 'application/json'
-        }
+
+        # Get authentication headers (with automatic refresh if needed)
+        if self.auth_manager:
+            try:
+                headers = self.auth_manager.get_auth_headers()
+            except Exception as e:
+                self.logger.error(f"❌ Authentication failed for batch {batch_id}: {e}")
+                return {
+                    'batch_id': batch_id,
+                    'status': 'failed',
+                    'error': f'Authentication failed: {e}'
+                }
+        else:
+            # Legacy manual token mode
+            headers = {
+                'Authorization': f'Bearer {self.auth_token}',
+                'GK-Passport': self.gk_passport,
+                'Content-Type': 'application/json'
+            }
         
         payload = {'data': batch}
         
@@ -300,19 +380,116 @@ class BulkCustomerImporter:
         return summary
     
     def save_failed_batches(self):
-        """Save failed batches to a file for retry"""
+        """Save failed batches in format suitable for immediate re-import"""
+        if not self.failed_batches:
+            return
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        failed_file = f"failed_batches_{timestamp}.json"
-        
-        failed_data = {
+
+        # Create retry directory
+        retry_dir = f"retry_batches_{timestamp}"
+        os.makedirs(retry_dir, exist_ok=True)
+
+        self.logger.info(f"[RETRY] Creating retry files in directory: {retry_dir}")
+
+        # Save each failed batch as a separate importable file
+        retry_files = []
+        for i, failed_batch in enumerate(self.failed_batches, 1):
+            # Create properly formatted batch for re-import
+            retry_batch = {
+                "data": failed_batch['customers']
+            }
+
+            # Generate filename
+            retry_filename = f"retry_batch_{i:02d}_failed.json"
+            retry_filepath = os.path.join(retry_dir, retry_filename)
+
+            # Save the batch
+            with open(retry_filepath, 'w', encoding='utf-8') as f:
+                json.dump(retry_batch, f, indent=2, ensure_ascii=False)
+
+            retry_files.append(retry_filename)
+
+            # Log details about this failed batch
+            customer_count = len(failed_batch['customers'])
+            error_msg = failed_batch.get('error', 'Unknown error')
+            self.logger.info(f"[RETRY] {retry_filename}: {customer_count} customers (Error: {error_msg})")
+
+        # Create summary file with error details
+        summary_file = os.path.join(retry_dir, "retry_summary.json")
+        summary_data = {
             'timestamp': timestamp,
-            'failed_batches': self.failed_batches
+            'total_failed_batches': len(self.failed_batches),
+            'total_failed_customers': sum(len(batch['customers']) for batch in self.failed_batches),
+            'retry_files': retry_files,
+            'error_details': [
+                {
+                    'batch_id': batch['batch_id'],
+                    'customer_count': len(batch['customers']),
+                    'error': batch.get('error', 'Unknown error'),
+                    'status_code': batch.get('status_code'),
+                    'retry_file': f"retry_batch_{i:02d}_failed.json"
+                }
+                for i, batch in enumerate(self.failed_batches, 1)
+            ]
         }
-        
-        with open(failed_file, 'w', encoding='utf-8') as f:
-            json.dump(failed_data, f, indent=2, ensure_ascii=False)
-        
-        self.logger.info(f"💾 Saved {len(self.failed_batches)} failed batches to {failed_file}")
+
+        with open(summary_file, 'w', encoding='utf-8') as f:
+            json.dump(summary_data, f, indent=2, ensure_ascii=False)
+
+        # Create instructions file
+        instructions_file = os.path.join(retry_dir, "RETRY_INSTRUCTIONS.md")
+        instructions_content = f"""# Failed Batch Retry Instructions
+
+## Summary
+- **Failed Batches**: {len(self.failed_batches)}
+- **Failed Customers**: {sum(len(batch['customers']) for batch in self.failed_batches)}
+- **Generated**: {timestamp}
+
+## How to Retry
+
+### Option 1: Use Bulk Import GUI
+1. Launch the Bulk Import GUI
+2. Go to **Files** tab
+3. Click **"Add Directory"**
+4. Select this directory: `{retry_dir}`
+5. Configure your API credentials
+6. Click **"Start Import"**
+
+### Option 2: Use Individual Files
+1. Load specific retry files one by one:
+{chr(10).join(f'   - {filename}' for filename in retry_files)}
+
+## Error Details
+{chr(10).join(f'- **{batch["retry_file"]}**: {batch["customer_count"]} customers - {batch["error"]}' for batch in summary_data["error_details"])}
+
+## Files in this Directory
+- `retry_summary.json` - Detailed error information
+- `RETRY_INSTRUCTIONS.md` - This file
+- `retry_batch_XX_failed.json` - Individual batch files ready for re-import
+
+All retry files are formatted correctly for immediate import!
+"""
+
+        with open(instructions_file, 'w', encoding='utf-8') as f:
+            f.write(instructions_content)
+
+        self.logger.info(f"[RETRY] ✅ Created {len(retry_files)} retry files in {retry_dir}")
+        self.logger.info(f"[RETRY] 📋 Summary saved to: {summary_file}")
+        self.logger.info(f"[RETRY] 📖 Instructions saved to: {instructions_file}")
+        self.logger.info(f"[RETRY] 🔄 Ready for immediate re-import!")
+
+        # Notify GUI about retry files creation
+        if hasattr(self, 'progress_callback') and self.progress_callback:
+            self.progress_callback({
+                'type': 'retry_files_created',
+                'retry_directory': retry_dir,
+                'retry_files': retry_files,
+                'failed_batches_count': len(self.failed_batches),
+                'failed_customers_count': sum(len(batch['customers']) for batch in self.failed_batches),
+                'summary_file': summary_file,
+                'instructions_file': instructions_file
+            })
 
 # Example usage function
 def main():

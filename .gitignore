@@ -15,6 +15,7 @@ customers_*.json
 **/customers_*.json
 customer_data/
 bulk_import_700_customers/
+bulk_import_1000_customers/
 bulk_import_batches/
 
 # Log files (may contain sensitive information)

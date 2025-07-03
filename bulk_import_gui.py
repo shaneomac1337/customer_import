@@ -30,6 +30,11 @@ class BulkImportGUI:
         self.max_workers = tk.IntVar(value=3)
         self.delay_between_requests = tk.DoubleVar(value=0.5)
         self.max_retries = tk.IntVar(value=3)
+
+        # New authentication variables
+        self.use_auto_auth = tk.BooleanVar(value=False)
+        self.username = tk.StringVar(value="coop_sweden")
+        self.password = tk.StringVar(value="coopsverige123")
         
         # File management
         self.selected_files = []
@@ -86,17 +91,56 @@ class BulkImportGUI:
         api_entry = ttk.Entry(api_group, textvariable=self.api_url, width=80)
         api_entry.grid(row=0, column=1, columnspan=2, sticky=tk.EW, pady=2)
         
-        ttk.Label(api_group, text="Auth Token:").grid(row=1, column=0, sticky=tk.W, pady=2)
-        auth_entry = ttk.Entry(api_group, textvariable=self.auth_token, width=80, show="*")
-        auth_entry.grid(row=1, column=1, columnspan=2, sticky=tk.EW, pady=2)
-        
-        ttk.Label(api_group, text="GK-Passport:").grid(row=2, column=0, sticky=tk.W, pady=2)
-        passport_entry = ttk.Entry(api_group, textvariable=self.gk_passport, width=80, show="*")
-        passport_entry.grid(row=2, column=1, columnspan=2, sticky=tk.EW, pady=2)
-        
-        # Show/Hide buttons for sensitive fields
-        ttk.Button(api_group, text="Show", command=lambda: self.toggle_password(auth_entry)).grid(row=1, column=3, padx=5)
-        ttk.Button(api_group, text="Show", command=lambda: self.toggle_password(passport_entry)).grid(row=2, column=3, padx=5)
+        # Authentication mode selection
+        auth_mode_frame = ttk.Frame(api_group)
+        auth_mode_frame.grid(row=1, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=5)
+
+        ttk.Label(auth_mode_frame, text="Authentication Mode:").pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Radiobutton(auth_mode_frame, text="Manual Token", variable=self.use_auto_auth,
+                       value=False, command=self.toggle_auth_mode).pack(side=tk.LEFT, padx=(0, 20))
+        ttk.Radiobutton(auth_mode_frame, text="Automatic (Username/Password)", variable=self.use_auto_auth,
+                       value=True, command=self.toggle_auth_mode).pack(side=tk.LEFT)
+
+        # Manual authentication fields
+        self.manual_auth_frame = ttk.Frame(api_group)
+        self.manual_auth_frame.grid(row=2, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=5)
+
+        ttk.Label(self.manual_auth_frame, text="Auth Token:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.auth_entry = ttk.Entry(self.manual_auth_frame, textvariable=self.auth_token, width=60, show="*")
+        self.auth_entry.grid(row=0, column=1, sticky=tk.EW, pady=2, padx=(10, 5))
+        ttk.Button(self.manual_auth_frame, text="Show", command=lambda: self.toggle_password(self.auth_entry)).grid(row=0, column=2, padx=5)
+
+        ttk.Label(self.manual_auth_frame, text="GK-Passport:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.passport_entry = ttk.Entry(self.manual_auth_frame, textvariable=self.gk_passport, width=60, show="*")
+        self.passport_entry.grid(row=1, column=1, sticky=tk.EW, pady=2, padx=(10, 5))
+        ttk.Button(self.manual_auth_frame, text="Show", command=lambda: self.toggle_password(self.passport_entry)).grid(row=1, column=2, padx=5)
+
+        # Automatic authentication fields
+        self.auto_auth_frame = ttk.Frame(api_group)
+        self.auto_auth_frame.grid(row=3, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=5)
+
+        ttk.Label(self.auto_auth_frame, text="Username:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        ttk.Entry(self.auto_auth_frame, textvariable=self.username, width=30).grid(row=0, column=1, sticky=tk.W, pady=2, padx=(10, 0))
+
+        ttk.Label(self.auto_auth_frame, text="Password:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.password_entry = ttk.Entry(self.auto_auth_frame, textvariable=self.password, width=30, show="*")
+        self.password_entry.grid(row=1, column=1, sticky=tk.W, pady=2, padx=(10, 5))
+        ttk.Button(self.auto_auth_frame, text="Show", command=lambda: self.toggle_password(self.password_entry)).grid(row=1, column=2, padx=5)
+
+        ttk.Label(self.auto_auth_frame, text="GK-Passport:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        self.auto_passport_entry = ttk.Entry(self.auto_auth_frame, textvariable=self.gk_passport, width=60, show="*")
+        self.auto_passport_entry.grid(row=2, column=1, sticky=tk.EW, pady=2, padx=(10, 5))
+        ttk.Button(self.auto_auth_frame, text="Show", command=lambda: self.toggle_password(self.auto_passport_entry)).grid(row=2, column=2, padx=5)
+
+        # Configure column weights for proper resizing
+        self.manual_auth_frame.columnconfigure(1, weight=1)
+        self.auto_auth_frame.columnconfigure(1, weight=1)
+
+        # Test authentication button
+        ttk.Button(api_group, text="Test Authentication", command=self.test_connection).grid(row=4, column=1, sticky=tk.E, pady=(10, 0))
+
+        # Initially set up the auth mode
+        self.toggle_auth_mode()
         
         api_group.columnconfigure(1, weight=1)
         
@@ -142,7 +186,6 @@ class BulkImportGUI:
         ttk.Button(buttons_frame, text="Add Files", command=self.add_files).pack(side=tk.LEFT, padx=5)
         ttk.Button(buttons_frame, text="Add Directory", command=self.add_directory).pack(side=tk.LEFT, padx=5)
         ttk.Button(buttons_frame, text="Clear All", command=self.clear_files).pack(side=tk.LEFT, padx=5)
-        ttk.Button(buttons_frame, text="Load 700 Customer Files", command=self.load_700_customer_files).pack(side=tk.LEFT, padx=5)
         
         # File list
         list_frame = ttk.Frame(selection_group)
@@ -249,6 +292,17 @@ class BulkImportGUI:
             entry_widget.config(show="")
         else:
             entry_widget.config(show="*")
+
+    def toggle_auth_mode(self):
+        """Toggle between manual and automatic authentication modes"""
+        if self.use_auto_auth.get():
+            # Show automatic auth, hide manual auth
+            self.manual_auth_frame.grid_remove()
+            self.auto_auth_frame.grid()
+        else:
+            # Show manual auth, hide automatic auth
+            self.auto_auth_frame.grid_remove()
+            self.manual_auth_frame.grid()
     
     def set_conservative_preset(self):
         """Set conservative import settings"""
@@ -302,28 +356,7 @@ class BulkImportGUI:
             self.update_file_list()
             self.log_message(f"Added {len(json_files)} files from {directory}")
     
-    def load_700_customer_files(self):
-        """Load the generated 700 customer files"""
-        customer_dir = "bulk_import_700_customers"
-        
-        if not os.path.exists(customer_dir):
-            messagebox.showerror("Error", f"Directory '{customer_dir}' not found!\nGenerate the files first using generate_700_simple.py")
-            return
-        
-        # Clear existing files
-        self.selected_files.clear()
-        
-        # Add all batch files
-        for i in range(1, 11):
-            filename = f"customers_70_batch_{i:02d}.json"
-            filepath = os.path.join(customer_dir, filename)
-            
-            if os.path.exists(filepath):
-                self.selected_files.append(filepath)
-        
-        self.update_file_list()
-        self.log_message(f"Loaded {len(self.selected_files)} customer batch files from {customer_dir}")
-    
+
     def clear_files(self):
         """Clear all selected files"""
         self.selected_files.clear()
@@ -423,15 +456,61 @@ class BulkImportGUI:
     
     def test_connection(self):
         """Test API connection"""
-        if not self.auth_token.get() or not self.gk_passport.get():
-            messagebox.showerror("Error", "Please enter Auth Token and GK-Passport first!")
-            return
-        
-        self.log_message("Testing API connection...")
-        
-        # This would be a simple test - you might want to implement a proper test endpoint
-        messagebox.showinfo("Connection Test", "Connection test not implemented yet.\nThis would test the API endpoint with your credentials.")
-        self.log_message("Connection test completed (placeholder)")
+        self.log_message("🔍 Testing authentication...")
+
+        try:
+            # Create a temporary importer to test authentication
+            if self.use_auto_auth.get():
+                # Test automatic authentication
+                if not self.username.get() or not self.password.get() or not self.gk_passport.get():
+                    messagebox.showerror("Error", "Please enter Username, Password, and GK-Passport!")
+                    return
+
+                importer = BulkCustomerImporter(
+                    api_url=self.api_url.get(),
+                    gk_passport=self.gk_passport.get(),
+                    username=self.username.get(),
+                    password=self.password.get(),
+                    use_auto_auth=True
+                )
+            else:
+                # Test manual authentication
+                if not self.auth_token.get() or not self.gk_passport.get():
+                    messagebox.showerror("Error", "Please enter Auth Token and GK-Passport!")
+                    return
+
+                importer = BulkCustomerImporter(
+                    api_url=self.api_url.get(),
+                    auth_token=self.auth_token.get(),
+                    gk_passport=self.gk_passport.get(),
+                    use_auto_auth=False
+                )
+
+            # Test authentication
+            result = importer.test_authentication()
+
+            if result['success']:
+                self.log_message(f"✅ Authentication successful!")
+                if 'token_preview' in result:
+                    self.log_message(f"   Token: {result['token_preview']}")
+                if 'expires_at' in result and result['expires_at']:
+                    self.log_message(f"   Expires: {result['expires_at']}")
+
+                messagebox.showinfo("Authentication Test",
+                                  f"✅ Authentication successful!\n\n"
+                                  f"Mode: {'Automatic' if self.use_auto_auth.get() else 'Manual'}\n"
+                                  f"Token: {result.get('token_preview', 'N/A')}\n"
+                                  f"Message: {result.get('message', 'OK')}")
+            else:
+                self.log_message(f"❌ Authentication failed: {result.get('error', 'Unknown error')}")
+                messagebox.showerror("Authentication Test",
+                                   f"❌ Authentication failed!\n\n"
+                                   f"Error: {result.get('error', 'Unknown error')}\n"
+                                   f"Message: {result.get('message', 'Authentication failed')}")
+
+        except Exception as e:
+            self.log_message(f"❌ Authentication test error: {e}")
+            messagebox.showerror("Authentication Test", f"Test failed with error:\n{e}")
     
     def start_import(self):
         """Start the import process"""
@@ -440,9 +519,15 @@ class BulkImportGUI:
             messagebox.showerror("Error", "No files selected!")
             return
         
-        if not self.auth_token.get() or not self.gk_passport.get():
-            messagebox.showerror("Error", "Please enter Auth Token and GK-Passport!")
-            return
+        # Validate authentication based on mode
+        if self.use_auto_auth.get():
+            if not self.username.get() or not self.password.get() or not self.gk_passport.get():
+                messagebox.showerror("Error", "Please enter Username, Password, and GK-Passport!")
+                return
+        else:
+            if not self.auth_token.get() or not self.gk_passport.get():
+                messagebox.showerror("Error", "Please enter Auth Token and GK-Passport!")
+                return
         
         if self.import_running:
             messagebox.showwarning("Warning", "Import is already running!")
@@ -486,17 +571,32 @@ class BulkImportGUI:
     def run_import(self):
         """Run the import process (in separate thread)"""
         try:
-            # Create importer with progress callback
-            importer = BulkCustomerImporter(
-                api_url=self.api_url.get(),
-                auth_token=self.auth_token.get(),
-                gk_passport=self.gk_passport.get(),
-                batch_size=self.batch_size.get(),
-                max_workers=self.max_workers.get(),
-                delay_between_requests=self.delay_between_requests.get(),
-                max_retries=self.max_retries.get(),
-                progress_callback=self.handle_api_response
-            )
+            # Create importer with progress callback based on authentication mode
+            if self.use_auto_auth.get():
+                importer = BulkCustomerImporter(
+                    api_url=self.api_url.get(),
+                    gk_passport=self.gk_passport.get(),
+                    batch_size=self.batch_size.get(),
+                    max_workers=self.max_workers.get(),
+                    delay_between_requests=self.delay_between_requests.get(),
+                    max_retries=self.max_retries.get(),
+                    progress_callback=self.handle_api_response,
+                    username=self.username.get(),
+                    password=self.password.get(),
+                    use_auto_auth=True
+                )
+            else:
+                importer = BulkCustomerImporter(
+                    api_url=self.api_url.get(),
+                    auth_token=self.auth_token.get(),
+                    gk_passport=self.gk_passport.get(),
+                    batch_size=self.batch_size.get(),
+                    max_workers=self.max_workers.get(),
+                    delay_between_requests=self.delay_between_requests.get(),
+                    max_retries=self.max_retries.get(),
+                    progress_callback=self.handle_api_response,
+                    use_auto_auth=False
+                )
             
             self.current_importer = importer
             
@@ -526,6 +626,8 @@ class BulkImportGUI:
                     self.handle_progress_update(data)
                 elif message_type == "api_response":
                     self.log_api_response(data)
+                elif message_type == "retry_files_created":
+                    self.handle_retry_files_created(data)
                 
         except queue.Empty:
             pass
@@ -589,6 +691,72 @@ class BulkImportGUI:
         """Handle API response from importer (called from worker thread)"""
         # Put the response data in the queue to be processed by the main thread
         self.progress_queue.put(("api_response", response_data))
+
+    def handle_retry_files_created(self, retry_data):
+        """Handle retry files creation notification"""
+        retry_dir = retry_data.get('retry_directory', '')
+        failed_batches = retry_data.get('failed_batches_count', 0)
+        failed_customers = retry_data.get('failed_customers_count', 0)
+        retry_files = retry_data.get('retry_files', [])
+
+        # Log the retry files creation
+        self.log_message(f"🔄 RETRY FILES CREATED:")
+        self.log_message(f"   Directory: {retry_dir}")
+        self.log_message(f"   Failed batches: {failed_batches}")
+        self.log_message(f"   Failed customers: {failed_customers}")
+        self.log_message(f"   Retry files: {len(retry_files)}")
+
+        # Show popup notification
+        retry_message = f"""Failed batches detected! Retry files have been created:
+
+📁 Directory: {retry_dir}
+📊 Failed batches: {failed_batches}
+👥 Failed customers: {failed_customers}
+📄 Retry files: {len(retry_files)}
+
+The retry files are formatted correctly for immediate re-import.
+You can load them using "Add Directory" in the Files tab.
+
+Check the RETRY_INSTRUCTIONS.md file in the retry directory for detailed instructions."""
+
+        messagebox.showinfo("Retry Files Created", retry_message)
+
+        # Optionally, ask if user wants to load retry files immediately
+        if messagebox.askyesno("Load Retry Files?",
+                              f"Would you like to load the retry files from {retry_dir} now?\n\n"
+                              "This will clear your current file selection and load only the failed batches for retry."):
+            self.load_retry_directory(retry_dir)
+
+    def load_retry_directory(self, retry_dir):
+        """Load retry files from the specified directory"""
+        try:
+            # Clear current selection
+            self.selected_files = []
+            self.update_files_display()
+
+            # Load all JSON files from retry directory (except summary files)
+            retry_files = []
+            for filename in os.listdir(retry_dir):
+                if filename.startswith('retry_batch_') and filename.endswith('.json'):
+                    filepath = os.path.join(retry_dir, filename)
+                    retry_files.append(filepath)
+
+            # Add retry files to selection
+            self.selected_files.extend(sorted(retry_files))
+            self.update_files_display()
+
+            self.log_message(f"✅ Loaded {len(retry_files)} retry files from {retry_dir}")
+
+            # Switch to Files tab to show the loaded files
+            # Find the notebook widget and select the Files tab
+            for widget in self.root.winfo_children():
+                if isinstance(widget, ttk.Notebook):
+                    widget.select(1)  # Files tab is typically index 1
+                    break
+
+        except Exception as e:
+            self.log_message(f"❌ Error loading retry files: {e}")
+            messagebox.showerror("Error", f"Failed to load retry files:\n{e}")
     
     def count_customers_in_file(self, file_path):
         """Count customers in a file"""
