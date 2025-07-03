@@ -154,24 +154,41 @@ class BulkCustomerImporter:
         return batches
 
     def _parse_api_response_for_failures(self, response_data, batch_customers):
-        """Parse API response to extract failed customers"""
+        """Parse API response to extract failed customers - ROBUST VERSION"""
         failed_customers = []
 
         try:
+            # Convert response to JSON if it's a string, handle log files gracefully
             if isinstance(response_data, str):
-                response_json = json.loads(response_data)
+                response_text = response_data
+                try:
+                    response_json = json.loads(response_data)
+                except json.JSONDecodeError:
+                    # This might be a log file with multiple JSON blocks, not a single JSON
+                    self.logger.debug(f"[PARSE] Response is not valid JSON, treating as log file or raw text")
+                    response_json = {"raw_response": response_data}
             else:
                 response_json = response_data
+                response_text = json.dumps(response_data) if response_data else ""
 
-            # Look for customer results in the response - check both 'data' and 'customers' arrays
+            self.logger.debug(f"[PARSE] Parsing response for failures. Response keys: {list(response_json.keys()) if isinstance(response_json, dict) else 'Not a dict'}")
+
+            # METHOD 1: Look for customer results in structured data
             customer_results = []
-            if 'data' in response_json:
-                customer_results = response_json['data']
-            elif 'customers' in response_json:
-                customer_results = response_json['customers']
 
+            # Check multiple possible locations for customer data
+            possible_data_keys = ['data', 'customers', 'results', 'customerResults']
+            for key in possible_data_keys:
+                if key in response_json and isinstance(response_json[key], list):
+                    customer_results = response_json[key]
+                    self.logger.debug(f"[PARSE] Found customer data in '{key}' with {len(customer_results)} entries")
+                    break
+
+            # Parse structured customer results
             for customer_result in customer_results:
-                if customer_result.get('result') == 'FAILED':
+                if isinstance(customer_result, dict) and customer_result.get('result') == 'FAILED':
+                    self.logger.info(f"[FAILED] FOUND FAILED CUSTOMER: {customer_result.get('customerId')} - {customer_result.get('username')}")
+
                     # Find the original customer data
                     customer_id = customer_result.get('customerId')
                     username = customer_result.get('username')
@@ -179,36 +196,95 @@ class BulkCustomerImporter:
                     # Try to match with original batch data
                     original_customer = None
                     for customer in batch_customers:
-                        if (customer.get('personalNumber') in username if username else False) or \
-                           (customer.get('customerCards', [{}])[0].get('cardNumber') == customer_id):
-                            original_customer = customer
-                            break
+                        # Match by card number
+                        if customer.get('customerCards') and len(customer['customerCards']) > 0:
+                            card_number = customer['customerCards'][0].get('cardNumber')
+                            if str(card_number) == str(customer_id):
+                                original_customer = customer
+                                break
+
+                        # Match by personal number in username
+                        if username and customer.get('personalNumber'):
+                            personal_num = customer['personalNumber'].replace('-', '')
+                            if personal_num in username.replace('-', ''):
+                                original_customer = customer
+                                break
 
                     failed_customer = {
                         'customerId': customer_id,
                         'username': username,
                         'result': customer_result.get('result'),
-                        'error': customer_result.get('error', 'Unknown error'),
+                        'error': customer_result.get('error', customer_result.get('errorMessage', 'Unknown error')),
                         'timestamp': datetime.now().isoformat(),
-                        'originalData': original_customer
+                        'originalData': original_customer,
+                        'batchInfo': f"Found in structured response data"
                     }
                     failed_customers.append(failed_customer)
 
-            # Also check for any other failure indicators in the response
-            if 'errors' in response_json:
+            # METHOD 2: ENHANCED Fallback - Search raw response text for "FAILED" pattern
+            # This handles both single responses and log files with multiple JSON blocks
+            if '"result": "FAILED"' in response_text or '"result":"FAILED"' in response_text:
+                self.logger.warning(f"[FALLBACK] Found 'FAILED' in raw response text, extracting all failures...")
+
+                # Enhanced regex to extract failed customers from log files or single responses
+                import re
+                failed_pattern = r'"customerId":\s*"([^"]+)"[^}]*"username":\s*"([^"]+)"[^}]*"result":\s*"FAILED"'
+                matches = re.findall(failed_pattern, response_text)
+
+                self.logger.info(f"[REGEX] Found {len(matches)} failed customer matches in response text")
+
+                for customer_id, username in matches:
+                    # Check if we already found this customer via structured parsing
+                    already_found = any(fc['customerId'] == customer_id for fc in failed_customers)
+                    if not already_found:
+                        self.logger.info(f"[REGEX] NEW FAILED CUSTOMER: {customer_id} - {username}")
+
+                        # Try to match with original batch data
+                        original_customer = None
+                        for customer in batch_customers:
+                            if customer.get('customerCards') and len(customer['customerCards']) > 0:
+                                card_number = customer['customerCards'][0].get('cardNumber')
+                                if str(card_number) == str(customer_id):
+                                    original_customer = customer
+                                    break
+
+                        failed_customer = {
+                            'customerId': customer_id,
+                            'username': username,
+                            'result': 'FAILED',
+                            'error': 'Detected via regex fallback - no specific error message',
+                            'timestamp': datetime.now().isoformat(),
+                            'originalData': original_customer,
+                            'batchInfo': f"Found via regex fallback in raw response"
+                        }
+                        failed_customers.append(failed_customer)
+                    else:
+                        self.logger.debug(f"[REGEX] DUPLICATE: {customer_id} already found via structured parsing")
+
+            # METHOD 3: Check for other failure indicators
+            if 'errors' in response_json and isinstance(response_json['errors'], list):
                 for error in response_json['errors']:
                     failed_customer = {
                         'customerId': error.get('customerId', 'Unknown'),
                         'username': error.get('username', 'Unknown'),
                         'result': 'FAILED',
-                        'error': error.get('message', str(error)),
+                        'error': error.get('message', error.get('errorMessage', str(error))),
                         'timestamp': datetime.now().isoformat(),
-                        'originalData': None
+                        'originalData': None,
+                        'batchInfo': f"Found in errors array"
                     }
                     failed_customers.append(failed_customer)
 
+            if failed_customers:
+                self.logger.warning(f"[FAILED] TOTAL FAILED CUSTOMERS DETECTED: {len(failed_customers)}")
+            else:
+                self.logger.debug(f"[PARSE] No failed customers detected in this batch")
+
         except Exception as e:
-            logging.error(f"Error parsing API response for failures: {e}")
+            self.logger.error(f"❌ Error parsing API response for failures: {e}")
+            self.logger.error(f"Response data type: {type(response_data)}")
+            if hasattr(response_data, '__len__'):
+                self.logger.error(f"Response data length: {len(response_data)}")
 
         return failed_customers
 
@@ -306,19 +382,31 @@ class BulkCustomerImporter:
                     with self.lock:
                         self.completed_batches += 1
 
-                    # Parse response
+                    # Parse response - ROBUST VERSION
                     response_data = {}
+                    response_text = ""
                     try:
                         if response.content:
+                            response_text = response.text
                             response_data = response.json()
-                    except json.JSONDecodeError:
-                        response_data = {'raw_response': response.text}
+                            self.logger.debug(f"📥 Batch {batch_id} response parsed successfully. Keys: {list(response_data.keys()) if isinstance(response_data, dict) else 'Not a dict'}")
+                    except json.JSONDecodeError as e:
+                        self.logger.warning(f"⚠️ Batch {batch_id} - JSON decode error: {e}")
+                        response_data = {'raw_response': response_text}
 
-                    # Check for failed customers within successful response
+                    # ALWAYS check for failed customers within successful response
+                    self.logger.info(f"[CHECK] Batch {batch_id} - Checking for failed customers in response...")
                     failed_customers = self._parse_api_response_for_failures(response_data, batch)
+
                     if failed_customers:
                         self._save_failed_customers(failed_customers)
-                        self.logger.warning(f"⚠️ Batch {batch_id} completed but {len(failed_customers)} customers failed")
+                        self.logger.error(f"[FAILED] Batch {batch_id} completed with HTTP 200 but {len(failed_customers)} customers FAILED!")
+                        for fc in failed_customers[:3]:  # Show first 3 failures
+                            self.logger.error(f"   - Failed: {fc['customerId']} ({fc['username']}) - {fc['error']}")
+                        if len(failed_customers) > 3:
+                            self.logger.error(f"   - ... and {len(failed_customers) - 3} more failures")
+                    else:
+                        self.logger.info(f"[SUCCESS] Batch {batch_id} - No failed customers detected")
 
                     self.logger.info(f"✅ Batch {batch_id} completed successfully - {self.completed_batches}/{self.total_batches}")
 
