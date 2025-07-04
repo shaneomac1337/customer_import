@@ -910,6 +910,14 @@ Check the RETRY_INSTRUCTIONS.md file in the retry directory for detailed instruc
                         self.api_responses_text.insert(tk.END, f"     Username: {customer.get('username', 'Unknown')}\n")
                         self.api_responses_text.insert(tk.END, f"     Error: {customer.get('error', 'Unknown error')}\n")
 
+                        # Show enhanced batch information if available
+                        if 'batch_number' in customer:
+                            self.api_responses_text.insert(tk.END, f"     Batch: {customer.get('batch_number', 'Unknown')} of {customer.get('total_batches', 'Unknown')}\n")
+                        if 'batch_size' in customer:
+                            self.api_responses_text.insert(tk.END, f"     Batch Size: {customer.get('batch_size', 'Unknown')} customers\n")
+                        if 'source_file' in customer and customer.get('source_file') != 'unknown':
+                            self.api_responses_text.insert(tk.END, f"     Source File: {customer.get('source_file', 'Unknown')}\n")
+
             self.api_responses_text.insert(tk.END, f"Response Data: {json.dumps(response_data['response_data'], indent=2)}\n")
             self.api_responses_text.insert(tk.END, f"Headers: {json.dumps(response_data['response_headers'], indent=2)}\n")
             self.api_responses_text.insert(tk.END, "-" * 80 + "\n\n")

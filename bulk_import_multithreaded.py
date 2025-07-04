@@ -264,16 +264,18 @@ class BulkCustomerImporter:
             # METHOD 3: Check for other failure indicators
             if 'errors' in response_json and isinstance(response_json['errors'], list):
                 for error in response_json['errors']:
-                    failed_customer = {
-                        'customerId': error.get('customerId', 'Unknown'),
-                        'username': error.get('username', 'Unknown'),
-                        'result': 'FAILED',
-                        'error': error.get('message', error.get('errorMessage', str(error))),
-                        'timestamp': datetime.now().isoformat(),
-                        'originalData': None,
-                        'batchInfo': f"Found in errors array"
-                    }
-                    failed_customers.append(failed_customer)
+                    # Ensure error is a dict before calling .get()
+                    if isinstance(error, dict):
+                        failed_customer = {
+                            'customerId': error.get('customerId', 'Unknown'),
+                            'username': error.get('username', 'Unknown'),
+                            'result': 'FAILED',
+                            'error': error.get('message', error.get('errorMessage', str(error))),
+                            'timestamp': datetime.now().isoformat(),
+                            'originalData': None,
+                            'batchInfo': f"Found in errors array"
+                        }
+                        failed_customers.append(failed_customer)
 
             if failed_customers:
                 self.logger.warning(f"[FAILED] TOTAL FAILED CUSTOMERS DETECTED: {len(failed_customers)}")
@@ -303,6 +305,29 @@ class BulkCustomerImporter:
                 logging.info(f"Saved {len(failed_customers)} failed customers to {self.failed_customers_file}")
             except Exception as e:
                 logging.error(f"Error saving failed customers to file: {e}")
+
+    def _save_failed_batch(self, batch: List[Dict[Any, Any]], batch_id: int):
+        """Save entire batch that contains failed customers to batches_to_retry directory"""
+        with self.failed_customers_lock:
+            # Ensure batches_to_retry directory exists
+            retry_dir = os.path.join("failed_customers", "batches_to_retry")
+            os.makedirs(retry_dir, exist_ok=True)
+
+            # Create filename with batch number
+            batch_filename = f"batch_{batch_id:03d}.json"
+            batch_filepath = os.path.join(retry_dir, batch_filename)
+
+            # Save the batch in the same format as the original API call
+            batch_data = {
+                "data": batch
+            }
+
+            try:
+                with open(batch_filepath, 'w', encoding='utf-8') as f:
+                    json.dump(batch_data, f, indent=2, ensure_ascii=False)
+                self.logger.info(f"💾 Saved failed batch {batch_id} to {batch_filepath} ({len(batch)} customers)")
+            except Exception as e:
+                self.logger.error(f"❌ Error saving failed batch {batch_id}: {e}")
 
     def get_failed_customers_summary(self):
         """Get summary of failed customers"""
@@ -396,10 +421,13 @@ class BulkCustomerImporter:
 
                     # ALWAYS check for failed customers within successful response
                     self.logger.info(f"[CHECK] Batch {batch_id} - Checking for failed customers in response...")
+
                     failed_customers = self._parse_api_response_for_failures(response_data, batch)
 
                     if failed_customers:
                         self._save_failed_customers(failed_customers)
+                        # Save the entire batch for easy retry
+                        self._save_failed_batch(batch, batch_id)
                         self.logger.error(f"[FAILED] Batch {batch_id} completed with HTTP 200 but {len(failed_customers)} customers FAILED!")
                         for fc in failed_customers[:3]:  # Show first 3 failures
                             self.logger.error(f"   - Failed: {fc['customerId']} ({fc['username']}) - {fc['error']}")
@@ -493,6 +521,13 @@ class BulkCustomerImporter:
                     }
                 else:
                     time.sleep(2 ** attempt)
+
+        # This should never be reached, but added for type safety
+        return {
+            'batch_id': batch_id,
+            'status': 'failed',
+            'error': 'Unexpected end of method - all retries exhausted'
+        }
     
     def import_customers(self, file_paths: List[str]) -> Dict[str, Any]:
         """Import customers from multiple files using multithreading"""
