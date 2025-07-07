@@ -899,13 +899,27 @@ Check the RETRY_INSTRUCTIONS.md file in the retry directory for detailed instruc
             self.api_responses_text.insert(tk.END, f"[{timestamp}] {status_icon} SUCCESS - Batch {response_data['batch_id']}\n")
             self.api_responses_text.insert(tk.END, f"Status Code: {response_data['status_code']}\n")
             self.api_responses_text.insert(tk.END, f"Customers: {response_data['customers_count']}\n")
+            
+            # Show response file location instead of full data
+            response_file = response_data.get('response_file', 'not_saved')
+            self.api_responses_text.insert(tk.END, f"Response File: {response_file}\n")
+            
+            # Show response summary instead of full data
+            response_summary = response_data.get('response_summary', {})
+            if response_summary:
+                if 'total_customers' in response_summary:
+                    self.api_responses_text.insert(tk.END, f"API Processed: {response_summary['total_customers']} customers\n")
+                if 'success_count' in response_summary:
+                    self.api_responses_text.insert(tk.END, f"API Success: {response_summary['success_count']}\n")
+                if 'failure_count' in response_summary:
+                    self.api_responses_text.insert(tk.END, f"API Failures: {response_summary['failure_count']}\n")
 
             if failed_count > 0:
                 self.api_responses_text.insert(tk.END, f"❌ Failed Customers: {failed_count}\n")
                 failed_customers = response_data.get('failed_customers', [])
                 if failed_customers:
-                    self.api_responses_text.insert(tk.END, f"Failed Customer Details (first 5):\n")
-                    for i, customer in enumerate(failed_customers[:5], 1):
+                    self.api_responses_text.insert(tk.END, f"Failed Customer Details (first 3):\n")
+                    for i, customer in enumerate(failed_customers[:3], 1):
                         self.api_responses_text.insert(tk.END, f"  {i}. ID: {customer.get('customerId', 'Unknown')}\n")
                         self.api_responses_text.insert(tk.END, f"     Username: {customer.get('username', 'Unknown')}\n")
                         self.api_responses_text.insert(tk.END, f"     Error: {customer.get('error', 'Unknown error')}\n")
@@ -918,8 +932,12 @@ Check the RETRY_INSTRUCTIONS.md file in the retry directory for detailed instruc
                         if 'source_file' in customer and customer.get('source_file') != 'unknown':
                             self.api_responses_text.insert(tk.END, f"     Source File: {customer.get('source_file', 'Unknown')}\n")
 
-            self.api_responses_text.insert(tk.END, f"Response Data: {json.dumps(response_data['response_data'], indent=2)}\n")
-            self.api_responses_text.insert(tk.END, f"Headers: {json.dumps(response_data['response_headers'], indent=2)}\n")
+            # Show lightweight headers instead of full headers
+            headers = response_data.get('response_headers', {})
+            if headers:
+                self.api_responses_text.insert(tk.END, f"Headers: Content-Type: {headers.get('content-type', 'unknown')}, ")
+                self.api_responses_text.insert(tk.END, f"Size: {headers.get('content-length', 'unknown')}\n")
+            
             self.api_responses_text.insert(tk.END, "-" * 80 + "\n\n")
 
         elif response_data['type'] == 'batch_error':
@@ -927,8 +945,19 @@ Check the RETRY_INSTRUCTIONS.md file in the retry directory for detailed instruc
             self.api_responses_text.insert(tk.END, f"Status Code: {response_data['status_code']}\n")
             self.api_responses_text.insert(tk.END, f"Customers: {response_data['customers_count']}\n")
             self.api_responses_text.insert(tk.END, f"Attempt: {response_data['attempt']}/{response_data['max_retries']}\n")
-            self.api_responses_text.insert(tk.END, f"Error Data: {json.dumps(response_data['error_data'], indent=2)}\n")
-            self.api_responses_text.insert(tk.END, f"Headers: {json.dumps(response_data['response_headers'], indent=2)}\n")
+            
+            # Show response file and error summary instead of full error data
+            response_file = response_data.get('response_file', 'not_saved')
+            self.api_responses_text.insert(tk.END, f"Response File: {response_file}\n")
+            
+            error_summary = response_data.get('error_summary', 'Unknown error')
+            self.api_responses_text.insert(tk.END, f"Error Summary: {error_summary}\n")
+            
+            # Show lightweight headers
+            headers = response_data.get('response_headers', {})
+            if headers:
+                self.api_responses_text.insert(tk.END, f"Content-Type: {headers.get('content-type', 'unknown')}\n")
+            
             self.api_responses_text.insert(tk.END, "-" * 80 + "\n\n")
 
         if self.auto_scroll_api.get():

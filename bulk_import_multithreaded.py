@@ -49,6 +49,11 @@ class BulkCustomerImporter:
         # Failed customers tracking
         self.failed_customers = []
         self.failed_customers_lock = threading.Lock()
+        
+        # API response logging to files
+        self.api_responses_dir = "api_responses"
+        os.makedirs(self.api_responses_dir, exist_ok=True)
+        self.response_file_lock = threading.Lock()
 
         # Authentication setup
         if use_auto_auth:
@@ -438,26 +443,44 @@ class BulkCustomerImporter:
 
                     self.logger.info(f"✅ Batch {batch_id} completed successfully - {self.completed_batches}/{self.total_batches}")
 
-                    # Send progress update with API response details
+                    # Save full API response to file and get summary
+                    response_summary = self._save_api_response_to_file(
+                        batch_id, response_data, response.status_code, dict(response.headers), "success"
+                    )
+                    
+                    # Create memory-efficient summary for GUI
+                    gui_summary = self._create_response_summary_for_gui(response_data, failed_customers)
+
+                    # Send progress update with lightweight data
                     if hasattr(self, 'progress_callback') and self.progress_callback:
                         self.progress_callback({
                             'type': 'batch_success',
                             'batch_id': batch_id,
                             'customers_count': len(batch),
                             'failed_customers_count': len(failed_customers) if failed_customers else 0,
-                            'response_data': response_data,
+                            'response_summary': gui_summary,  # Lightweight summary instead of full data
+                            'response_file': response_summary['response_file'],  # File reference
                             'status_code': response.status_code,
-                            'response_headers': dict(response.headers),
-                            'failed_customers': failed_customers[:5] if failed_customers else []  # Show first 5 failures
+                            'response_headers': {  # Only essential headers
+                                'content-type': dict(response.headers).get('content-type', 'unknown'),
+                                'content-length': dict(response.headers).get('content-length', 'unknown')
+                            },
+                            'failed_customers': failed_customers[:3] if failed_customers else []  # Only first 3 for GUI
                         })
 
+                    # Save API response to file
+                    response_summary = self._save_api_response_to_file(batch_id, response_data, response.status_code, dict(response.headers), response_type="success")
+                    
                     return {
                         'batch_id': batch_id,
                         'status': 'success',
                         'customers_count': len(batch),
                         'response': response_data,
                         'status_code': response.status_code,
-                        'response_headers': dict(response.headers)
+                        'response_headers': dict(response.headers),
+                        'response_file': response_summary.get('response_file'),
+                        'data_size': response_summary.get('data_size'),
+                        'has_data': response_summary.get('has_data')
                     }
                 else:
                     # Parse error response
@@ -470,15 +493,23 @@ class BulkCustomerImporter:
 
                     self.logger.warning(f"⚠️ Batch {batch_id} failed with status {response.status_code}: {response.text}")
 
+                    # Save error response to file
+                    error_summary = self._save_api_response_to_file(
+                        batch_id, error_data, response.status_code, dict(response.headers), "error"
+                    )
+
                     # Send progress update with API error details
                     if hasattr(self, 'progress_callback') and self.progress_callback:
                         self.progress_callback({
                             'type': 'batch_error',
                             'batch_id': batch_id,
                             'customers_count': len(batch),
-                            'error_data': error_data,
+                            'error_summary': error_data.get('error', str(error_data))[:200] if error_data else 'Unknown error',  # Summary only
+                            'response_file': error_summary['response_file'],  # File reference
                             'status_code': response.status_code,
-                            'response_headers': dict(response.headers),
+                            'response_headers': {  # Essential headers only
+                                'content-type': dict(response.headers).get('content-type', 'unknown')
+                            },
                             'attempt': attempt + 1,
                             'max_retries': self.max_retries
                         })
@@ -724,6 +755,97 @@ All retry files are formatted correctly for immediate import!
                 'summary_file': summary_file,
                 'instructions_file': instructions_file
             })
+
+    def _save_api_response_to_file(self, batch_id: int, response_data: dict, status_code: int, headers: dict, response_type: str = "success"):
+        """Save full API response to file and return summary for memory efficiency"""
+        try:
+            with self.response_file_lock:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"batch_{batch_id:03d}_{response_type}_{timestamp}.json"
+                filepath = os.path.join(self.api_responses_dir, filename)
+                
+                # Full response data for file
+                full_response = {
+                    'timestamp': timestamp,
+                    'batch_id': batch_id,
+                    'status_code': status_code,
+                    'headers': headers,
+                    'response_data': response_data,
+                    'response_type': response_type
+                }
+                
+                # Save to file
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    json.dump(full_response, f, indent=2, ensure_ascii=False)
+                
+                self.logger.debug(f"[API_LOG] Saved full response to: {filename}")
+                
+                # Return lightweight summary for GUI
+                summary = {
+                    'batch_id': batch_id,
+                    'status_code': status_code,
+                    'response_file': filename,
+                    'data_size': len(str(response_data)) if response_data else 0,
+                    'has_data': bool(response_data),
+                    'timestamp': timestamp
+                }
+                
+                # Add key response info without full data
+                if isinstance(response_data, dict):
+                    if 'data' in response_data and isinstance(response_data['data'], list):
+                        summary['customers_processed'] = len(response_data['data'])
+                    if 'message' in response_data:
+                        summary['message'] = response_data['message'][:100]  # First 100 chars
+                    if 'error' in response_data:
+                        summary['error_summary'] = response_data['error'][:200]  # First 200 chars
+                
+                return summary
+                
+        except Exception as e:
+            self.logger.error(f"[ERROR] Failed to save API response to file: {e}")
+            # Return basic summary even if file save fails
+            return {
+                'batch_id': batch_id,
+                'status_code': status_code,
+                'response_file': 'save_failed',
+                'data_size': len(str(response_data)) if response_data else 0,
+                'error': f"File save failed: {e}"
+            }
+
+    def _create_response_summary_for_gui(self, response_data: dict, failed_customers: list):
+        """Create memory-efficient summary for GUI display"""
+        summary = {}
+        
+        # Basic response info without full data
+        if isinstance(response_data, dict):
+            # Count results without storing full data
+            if 'data' in response_data and isinstance(response_data['data'], list):
+                summary['total_customers'] = len(response_data['data'])
+                
+                # Count successes/failures without storing details
+                success_count = 0
+                failure_count = 0
+                for customer in response_data['data']:
+                    if isinstance(customer, dict):
+                        result = customer.get('result', 'SUCCESS')
+                        if result == 'FAILED':
+                            failure_count += 1
+                        else:
+                            success_count += 1
+                
+                summary['success_count'] = success_count
+                summary['failure_count'] = failure_count
+            
+            # Include error messages but not full data
+            if 'error' in response_data:
+                summary['api_error'] = str(response_data['error'])[:200]
+            if 'message' in response_data:
+                summary['api_message'] = str(response_data['message'])[:100]
+        
+        # Add failed customer count from our parsing
+        summary['parsed_failed_count'] = len(failed_customers) if failed_customers else 0
+        
+        return summary
 
 # Example usage function
 def main():
