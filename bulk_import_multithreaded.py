@@ -191,7 +191,7 @@ class BulkCustomerImporter:
 
             # Parse structured customer results
             for customer_result in customer_results:
-                if isinstance(customer_result, dict) and customer_result.get('result') == 'FAILED':
+                if isinstance(customer_result, dict) and customer_result.get('result') in ['FAILED', 'ERROR']:
                     self.logger.info(f"[FAILED] FOUND FAILED CUSTOMER: {customer_result.get('customerId')} - {customer_result.get('username')}")
 
                     # Find the original customer data
@@ -226,14 +226,15 @@ class BulkCustomerImporter:
                     }
                     failed_customers.append(failed_customer)
 
-            # METHOD 2: ENHANCED Fallback - Search raw response text for "FAILED" pattern
+            # METHOD 2: ENHANCED Fallback - Search raw response text for "FAILED" or "ERROR" pattern
             # This handles both single responses and log files with multiple JSON blocks
-            if '"result": "FAILED"' in response_text or '"result":"FAILED"' in response_text:
-                self.logger.warning(f"[FALLBACK] Found 'FAILED' in raw response text, extracting all failures...")
+            if ('"result": "FAILED"' in response_text or '"result":"FAILED"' in response_text or
+                '"result": "ERROR"' in response_text or '"result":"ERROR"' in response_text):
+                self.logger.warning(f"[FALLBACK] Found 'FAILED' or 'ERROR' in raw response text, extracting all failures...")
 
                 # Enhanced regex to extract failed customers from log files or single responses
                 import re
-                failed_pattern = r'"customerId":\s*"([^"]+)"[^}]*"username":\s*"([^"]+)"[^}]*"result":\s*"FAILED"'
+                failed_pattern = r'"customerId":\s*"([^"]+)"[^}]*"username":\s*"([^"]+)"[^}]*"result":\s*"(?:FAILED|ERROR)"'
                 matches = re.findall(failed_pattern, response_text)
 
                 self.logger.info(f"[REGEX] Found {len(matches)} failed customer matches in response text")
@@ -256,7 +257,7 @@ class BulkCustomerImporter:
                         failed_customer = {
                             'customerId': customer_id,
                             'username': username,
-                            'result': 'FAILED',
+                            'result': 'FAILED',  # Will be FAILED or ERROR from regex
                             'error': 'Detected via regex fallback - no specific error message',
                             'timestamp': datetime.now().isoformat(),
                             'originalData': original_customer,
@@ -830,7 +831,7 @@ All retry files are formatted correctly for immediate import!
                 for customer in response_data['data']:
                     if isinstance(customer, dict):
                         result = customer.get('result', 'SUCCESS')
-                        if result == 'FAILED':
+                        if result in ['FAILED', 'ERROR']:
                             failure_count += 1
                         else:
                             success_count += 1
