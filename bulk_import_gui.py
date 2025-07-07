@@ -79,6 +79,11 @@ class BulkImportGUI:
         api_responses_frame = ttk.Frame(notebook)
         notebook.add(api_responses_frame, text="API Responses")
         self.create_api_responses_tab(api_responses_frame)
+
+        # Failed Customers Tab
+        failed_customers_frame = ttk.Frame(notebook)
+        notebook.add(failed_customers_frame, text="Failed Customers")
+        self.create_failed_customers_tab(failed_customers_frame)
     
     def create_config_tab(self, parent):
         """Create configuration tab"""
@@ -632,6 +637,9 @@ class BulkImportGUI:
                     self.handle_progress_update(data)
                 elif message_type == "api_response":
                     self.log_api_response(data)
+                    # Auto-refresh failed customers tab if enabled
+                    if hasattr(self, 'auto_refresh_failed') and self.auto_refresh_failed.get():
+                        self.refresh_failed_customers()
                 elif message_type == "retry_files_created":
                     self.handle_retry_files_created(data)
                 
@@ -697,6 +705,10 @@ class BulkImportGUI:
             )
         else:
             self.log_message("Import completed with no results")
+
+        # Final refresh of failed customers tab
+        if hasattr(self, 'failed_customers_tree'):
+            self.refresh_failed_customers()
     
     def handle_import_error(self, error_msg):
         """Handle import error"""
@@ -757,7 +769,7 @@ Check the RETRY_INSTRUCTIONS.md file in the retry directory for detailed instruc
         try:
             # Clear current selection
             self.selected_files = []
-            self.update_files_display()
+            self.update_file_list()
 
             # Load all JSON files from retry directory (except summary files)
             retry_files = []
@@ -768,7 +780,7 @@ Check the RETRY_INSTRUCTIONS.md file in the retry directory for detailed instruc
 
             # Add retry files to selection
             self.selected_files.extend(sorted(retry_files))
-            self.update_files_display()
+            self.update_file_list()
 
             self.log_message(f"✅ Loaded {len(retry_files)} retry files from {retry_dir}")
 
@@ -964,6 +976,307 @@ Check the RETRY_INSTRUCTIONS.md file in the retry directory for detailed instruc
             self.api_responses_text.see(tk.END)
 
         self.api_responses_text.config(state=tk.DISABLED)
+
+    def create_failed_customers_tab(self, parent):
+        """Create failed customers tab"""
+
+        # Main frame
+        main_frame = ttk.Frame(parent)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Title and summary frame
+        header_frame = ttk.Frame(main_frame)
+        header_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(header_frame, text="Failed Customers", font=('Arial', 12, 'bold')).pack(side=tk.LEFT)
+
+        # Total count label
+        self.failed_count_label = ttk.Label(header_frame, text="Total: 0", font=('Arial', 10, 'bold'), foreground='red')
+        self.failed_count_label.pack(side=tk.RIGHT)
+
+        # Control buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Button(button_frame, text="Refresh", command=self.refresh_failed_customers).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(button_frame, text="Export Failed Customers", command=self.export_failed_customers).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(button_frame, text="Clear Failed Customers", command=self.clear_failed_customers).pack(side=tk.LEFT)
+
+        # Auto-refresh checkbox
+        self.auto_refresh_failed = tk.BooleanVar(value=True)
+        ttk.Checkbutton(button_frame, text="Auto-refresh during import", variable=self.auto_refresh_failed).pack(side=tk.RIGHT)
+
+        # Failed customers table
+        table_frame = ttk.Frame(main_frame)
+        table_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Create Treeview for failed customers
+        columns = ("Customer ID", "Username", "Error", "Timestamp", "Batch Info")
+        self.failed_customers_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=20)
+
+        # Configure column headings and widths
+        self.failed_customers_tree.heading("Customer ID", text="Customer ID")
+        self.failed_customers_tree.heading("Username", text="Username")
+        self.failed_customers_tree.heading("Error", text="Error")
+        self.failed_customers_tree.heading("Timestamp", text="Timestamp")
+        self.failed_customers_tree.heading("Batch Info", text="Batch Info")
+
+        self.failed_customers_tree.column("Customer ID", width=120, minwidth=100)
+        self.failed_customers_tree.column("Username", width=150, minwidth=120)
+        self.failed_customers_tree.column("Error", width=300, minwidth=200)
+        self.failed_customers_tree.column("Timestamp", width=150, minwidth=120)
+        self.failed_customers_tree.column("Batch Info", width=200, minwidth=150)
+
+        # Add scrollbars
+        v_scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.failed_customers_tree.yview)
+        h_scrollbar = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=self.failed_customers_tree.xview)
+        self.failed_customers_tree.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+
+        # Pack table and scrollbars
+        self.failed_customers_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Add initial message
+        self.failed_customers_tree.insert("", tk.END, values=("No failed customers yet", "", "", "", ""))
+
+        # Bind double-click to show details
+        self.failed_customers_tree.bind("<Double-1>", self.show_failed_customer_details)
+
+    def refresh_failed_customers(self):
+        """Refresh the failed customers display"""
+        try:
+            # Clear existing items
+            for item in self.failed_customers_tree.get_children():
+                self.failed_customers_tree.delete(item)
+
+            # Get failed customers from current importer
+            failed_customers = []
+            if self.current_importer:
+                try:
+                    failed_info = self.current_importer.get_failed_customers_summary()
+                    if failed_info['total_failed'] > 0:
+                        # Get the actual failed customers list
+                        with self.current_importer.failed_customers_lock:
+                            failed_customers = self.current_importer.failed_customers.copy()
+                except Exception as e:
+                    self.log_message(f"Error getting failed customers from importer: {e}")
+
+            # Also try to load from failed customers file
+            if not failed_customers:
+                # Look for both timestamped and non-timestamped failed customers files
+                failed_customers_files = []
+                failed_customers_dir = "failed_customers"
+
+                if os.path.exists(failed_customers_dir):
+                    try:
+                        # Find all failed customers JSON files
+                        for filename in os.listdir(failed_customers_dir):
+                            if filename.startswith('failed_customers') and filename.endswith('.json'):
+                                filepath = os.path.join(failed_customers_dir, filename)
+                                if os.path.isfile(filepath):
+                                    failed_customers_files.append(filepath)
+
+                        # Sort by modification time (most recent first)
+                        failed_customers_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+
+                        # Try to load from the most recent file
+                        if failed_customers_files:
+                            failed_customers_file = failed_customers_files[0]
+                            self.log_message(f"Loading failed customers from: {failed_customers_file}")
+                            with open(failed_customers_file, 'r', encoding='utf-8') as f:
+                                failed_customers = json.load(f)
+
+                    except Exception as e:
+                        self.log_message(f"Error loading failed customers file: {e}")
+
+            # Update count label
+            total_failed = len(failed_customers)
+            self.failed_count_label.config(text=f"Total: {total_failed}")
+
+            if total_failed == 0:
+                self.failed_customers_tree.insert("", tk.END, values=("No failed customers", "", "", "", ""))
+            else:
+                # Add failed customers to tree
+                for customer in failed_customers:
+                    customer_id = customer.get('customerId', 'Unknown')
+                    username = customer.get('username', 'Unknown')
+                    error = customer.get('error', 'Unknown error')
+                    timestamp = customer.get('timestamp', 'Unknown')
+                    batch_info = customer.get('batchInfo', 'Unknown')
+
+                    # Truncate long error messages for display
+                    if len(error) > 50:
+                        error = error[:47] + "..."
+
+                    # Format timestamp for display
+                    if timestamp != 'Unknown':
+                        try:
+                            from datetime import datetime
+                            dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                            timestamp = dt.strftime('%Y-%m-%d %H:%M:%S')
+                        except:
+                            pass  # Keep original timestamp if parsing fails
+
+                    self.failed_customers_tree.insert("", tk.END, values=(
+                        customer_id, username, error, timestamp, batch_info
+                    ))
+
+            self.log_message(f"Refreshed failed customers display: {total_failed} failed customers")
+
+        except Exception as e:
+            self.log_message(f"Error refreshing failed customers: {e}")
+            messagebox.showerror("Error", f"Failed to refresh failed customers: {e}")
+
+    def export_failed_customers(self):
+        """Export failed customers to file"""
+        try:
+            # Get failed customers data
+            failed_customers = []
+            if self.current_importer:
+                try:
+                    with self.current_importer.failed_customers_lock:
+                        failed_customers = self.current_importer.failed_customers.copy()
+                except Exception as e:
+                    self.log_message(f"Error getting failed customers from importer: {e}")
+
+            # Also try to load from file if no current importer data
+            if not failed_customers:
+                failed_customers_file = "failed_customers/failed_customers.json"
+                if os.path.exists(failed_customers_file):
+                    try:
+                        with open(failed_customers_file, 'r', encoding='utf-8') as f:
+                            failed_customers = json.load(f)
+                    except Exception as e:
+                        self.log_message(f"Error loading failed customers file: {e}")
+
+            if not failed_customers:
+                messagebox.showinfo("No Data", "No failed customers to export")
+                return
+
+            # Ask user for export file location
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".json",
+                filetypes=[("JSON files", "*.json"), ("CSV files", "*.csv"), ("Text files", "*.txt"), ("All files", "*.*")],
+                title="Export Failed Customers"
+            )
+
+            if file_path:
+                if file_path.endswith('.csv'):
+                    # Export as CSV
+                    import csv
+                    with open(file_path, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.writer(f)
+                        writer.writerow(['Customer ID', 'Username', 'Error', 'Timestamp', 'Batch Info'])
+                        for customer in failed_customers:
+                            writer.writerow([
+                                customer.get('customerId', 'Unknown'),
+                                customer.get('username', 'Unknown'),
+                                customer.get('error', 'Unknown error'),
+                                customer.get('timestamp', 'Unknown'),
+                                customer.get('batchInfo', 'Unknown')
+                            ])
+                else:
+                    # Export as JSON
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        json.dump(failed_customers, f, indent=2, ensure_ascii=False)
+
+                messagebox.showinfo("Success", f"Failed customers exported to {file_path}")
+                self.log_message(f"Exported {len(failed_customers)} failed customers to {file_path}")
+
+        except Exception as e:
+            self.log_message(f"Error exporting failed customers: {e}")
+            messagebox.showerror("Error", f"Failed to export failed customers: {e}")
+
+    def clear_failed_customers(self):
+        """Clear failed customers data"""
+        result = messagebox.askyesno(
+            "Clear Failed Customers",
+            "Are you sure you want to clear all failed customers data?\n\nThis will:\n- Clear the display\n- Clear data from current importer\n- NOT delete saved files"
+        )
+
+        if result:
+            try:
+                # Clear from current importer
+                if self.current_importer:
+                    with self.current_importer.failed_customers_lock:
+                        self.current_importer.failed_customers.clear()
+
+                # Clear the display
+                for item in self.failed_customers_tree.get_children():
+                    self.failed_customers_tree.delete(item)
+
+                self.failed_customers_tree.insert("", tk.END, values=("No failed customers", "", "", "", ""))
+                self.failed_count_label.config(text="Total: 0")
+
+                self.log_message("Cleared failed customers data")
+                messagebox.showinfo("Success", "Failed customers data cleared")
+
+            except Exception as e:
+                self.log_message(f"Error clearing failed customers: {e}")
+                messagebox.showerror("Error", f"Failed to clear failed customers: {e}")
+
+    def show_failed_customer_details(self, event):
+        """Show detailed information about a failed customer"""
+        selection = self.failed_customers_tree.selection()
+        if not selection:
+            return
+
+        item = self.failed_customers_tree.item(selection[0])
+        values = item['values']
+
+        if len(values) < 5 or values[0] == "No failed customers":
+            return
+
+        customer_id = values[0]
+
+        # Find the full customer data
+        failed_customer = None
+        if self.current_importer:
+            try:
+                with self.current_importer.failed_customers_lock:
+                    for customer in self.current_importer.failed_customers:
+                        if customer.get('customerId') == customer_id:
+                            failed_customer = customer
+                            break
+            except Exception as e:
+                self.log_message(f"Error getting customer details: {e}")
+
+        if not failed_customer:
+            messagebox.showinfo("No Details", f"No detailed information available for customer {customer_id}")
+            return
+
+        # Create details window
+        details_window = tk.Toplevel(self.root)
+        details_window.title(f"Failed Customer Details - {customer_id}")
+        details_window.geometry("600x500")
+        details_window.transient(self.root)
+        details_window.grab_set()
+
+        # Create scrolled text widget for details
+        details_text = scrolledtext.ScrolledText(details_window, wrap=tk.WORD, font=('Consolas', 10))
+        details_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Format and display customer details
+        details = f"FAILED CUSTOMER DETAILS\n"
+        details += "=" * 50 + "\n\n"
+        details += f"Customer ID: {failed_customer.get('customerId', 'Unknown')}\n"
+        details += f"Username: {failed_customer.get('username', 'Unknown')}\n"
+        details += f"Result: {failed_customer.get('result', 'Unknown')}\n"
+        details += f"Error: {failed_customer.get('error', 'Unknown error')}\n"
+        details += f"Timestamp: {failed_customer.get('timestamp', 'Unknown')}\n"
+        details += f"Batch Info: {failed_customer.get('batchInfo', 'Unknown')}\n\n"
+
+        if failed_customer.get('originalData'):
+            details += "ORIGINAL CUSTOMER DATA:\n"
+            details += "-" * 30 + "\n"
+            details += json.dumps(failed_customer['originalData'], indent=2, ensure_ascii=False)
+
+        details_text.insert(tk.END, details)
+        details_text.config(state=tk.DISABLED)
+
+        # Add close button
+        ttk.Button(details_window, text="Close", command=details_window.destroy).pack(pady=10)
 
 def main():
     """Main function to run the GUI"""

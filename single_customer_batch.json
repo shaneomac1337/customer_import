@@ -1,0 +1,19 @@
+{
+  "data": [
+    {
+      "changeType": "CREATE",
+      "type": "PERSON",
+      "person": {
+        "customerId": "50000000001",
+        "status": "UNACTIVATED",
+        "firstName": "Mikael",
+        "lastName": "Håkansson",
+        "languageCode": "sv",
+        "birthday": "1964-03-19",
+        "statisticalUseAllowed": false,
+        "marketingAllowedFlag": true,
+        "declarationAvailable": true
+      }
+    }
+  ]
+}
