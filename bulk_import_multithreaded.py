@@ -314,8 +314,10 @@ class BulkCustomerImporter:
     def _save_failed_batch(self, batch: List[Dict[Any, Any]], batch_id: int):
         """Save entire batch that contains failed customers to batches_to_retry directory"""
         with self.failed_customers_lock:
-            # Ensure batches_to_retry directory exists
-            retry_dir = os.path.join("failed_customers", "batches_to_retry")
+            # Create timestamped retry directory to avoid overwriting
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            retry_dir = os.path.join("failed_customers", f"batches_to_retry_{timestamp}")
             os.makedirs(retry_dir, exist_ok=True)
 
             # Create filename with batch number
