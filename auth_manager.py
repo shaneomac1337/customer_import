@@ -43,8 +43,8 @@ class AuthenticationManager:
         self.token_expires_at: Optional[datetime] = None
         self.token_lock = threading.Lock()
         
-        # Buffer time before token expiry (refresh 5 minutes early)
-        self.refresh_buffer_seconds = 300
+        # Buffer time before token expiry (refresh 50 minutes early = every 10 minutes)
+        self.refresh_buffer_seconds = 3000
         
         # Setup logging
         self.logger = logging.getLogger(__name__)
