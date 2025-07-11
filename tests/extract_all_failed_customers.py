@@ -25,7 +25,7 @@ def extract_all_failed_customers_from_response_log():
     print(f"✅ Loaded response.log ({len(response_content)} characters)")
     
     # Method 1: Extract using regex pattern for failed customers
-    failed_pattern = r'"customerId":\s*"([^"]+)"[^}]*"username":\s*"([^"]+)"[^}]*"result":\s*"FAILED"'
+    failed_pattern = r'"customerId":\s*"([^"]+)"[^}]*"username":\s*"([^"]+)"[^}]*"result":\s*"(?:FAILED|ERROR|CONFLICT)"'
     matches = re.findall(failed_pattern, response_content)
     
     print(f"🔍 Regex search found {len(matches)} failed customers")
@@ -57,7 +57,7 @@ def extract_all_failed_customers_from_response_log():
         failed_customer = {
             'customerId': customer_id,
             'username': username,
-            'result': 'FAILED',
+            'result': 'FAILED',  # Will be updated below if we can determine the actual result
             'error': 'Extracted from response.log via regex',
             'timestamp': datetime.now().isoformat(),
             'source': 'regex_extraction',
@@ -69,11 +69,11 @@ def extract_all_failed_customers_from_response_log():
     for json_block in json_blocks:
         if 'data' in json_block:
             for customer_result in json_block['data']:
-                if isinstance(customer_result, dict) and customer_result.get('result') == 'FAILED':
+                if isinstance(customer_result, dict) and customer_result.get('result') in ['FAILED', 'ERROR', 'CONFLICT']:
                     failed_customer = {
                         'customerId': customer_result.get('customerId'),
                         'username': customer_result.get('username'),
-                        'result': 'FAILED',
+                        'result': customer_result.get('result', 'FAILED'),
                         'error': customer_result.get('error', 'Extracted from response.log via JSON parsing'),
                         'timestamp': datetime.now().isoformat(),
                         'source': 'json_extraction',

@@ -226,3 +226,4 @@ results_*.csv
 
 # Sample data (anonymized):
 # - tableau.json (if it contains no real customer data)
+Output_new.json

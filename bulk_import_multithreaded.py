@@ -191,7 +191,7 @@ class BulkCustomerImporter:
 
             # Parse structured customer results
             for customer_result in customer_results:
-                if isinstance(customer_result, dict) and customer_result.get('result') in ['FAILED', 'ERROR']:
+                if isinstance(customer_result, dict) and customer_result.get('result') in ['FAILED', 'ERROR', 'CONFLICT']:
                     self.logger.info(f"[FAILED] FOUND FAILED CUSTOMER: {customer_result.get('customerId')} - {customer_result.get('username')}")
 
                     # Find the original customer data
@@ -226,15 +226,16 @@ class BulkCustomerImporter:
                     }
                     failed_customers.append(failed_customer)
 
-            # METHOD 2: ENHANCED Fallback - Search raw response text for "FAILED" or "ERROR" pattern
+            # METHOD 2: ENHANCED Fallback - Search raw response text for "FAILED", "ERROR", or "CONFLICT" pattern
             # This handles both single responses and log files with multiple JSON blocks
             if ('"result": "FAILED"' in response_text or '"result":"FAILED"' in response_text or
-                '"result": "ERROR"' in response_text or '"result":"ERROR"' in response_text):
-                self.logger.warning(f"[FALLBACK] Found 'FAILED' or 'ERROR' in raw response text, extracting all failures...")
+                '"result": "ERROR"' in response_text or '"result":"ERROR"' in response_text or
+                '"result": "CONFLICT"' in response_text or '"result":"CONFLICT"' in response_text):
+                self.logger.warning(f"[FALLBACK] Found 'FAILED', 'ERROR', or 'CONFLICT' in raw response text, extracting all failures...")
 
                 # Enhanced regex to extract failed customers from log files or single responses
                 import re
-                failed_pattern = r'"customerId":\s*"([^"]+)"[^}]*"username":\s*"([^"]+)"[^}]*"result":\s*"(?:FAILED|ERROR)"'
+                failed_pattern = r'"customerId":\s*"([^"]+)"[^}]*"username":\s*"([^"]+)"[^}]*"result":\s*"(?:FAILED|ERROR|CONFLICT)"'
                 matches = re.findall(failed_pattern, response_text)
 
                 self.logger.info(f"[REGEX] Found {len(matches)} failed customer matches in response text")
@@ -831,7 +832,7 @@ All retry files are formatted correctly for immediate import!
                 for customer in response_data['data']:
                     if isinstance(customer, dict):
                         result = customer.get('result', 'SUCCESS')
-                        if result in ['FAILED', 'ERROR']:
+                        if result in ['FAILED', 'ERROR', 'CONFLICT']:
                             failure_count += 1
                         else:
                             success_count += 1
