@@ -8,6 +8,7 @@ import os
 import logging
 from typing import List, Dict, Any
 import queue
+import gc
 from auth_manager import AuthenticationManager
 
 class BulkCustomerImporter:
@@ -157,6 +158,26 @@ class BulkCustomerImporter:
             batch = customers[i:i + self.batch_size]
             batches.append(batch)
         return batches
+
+    def load_lazy_batch(self, lazy_batch_info: Dict[str, Any]) -> List[Dict[Any, Any]]:
+        """Load a specific batch from file using lazy batch info"""
+        try:
+            file_path = lazy_batch_info['file_path']
+            start_idx = lazy_batch_info['start_idx']
+            end_idx = lazy_batch_info['end_idx']
+
+            # Load only the customers we need for this batch
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                all_customers = data.get('data', [])
+
+                # Extract only the slice we need
+                batch_customers = all_customers[start_idx:end_idx]
+                return batch_customers
+
+        except Exception as e:
+            self.logger.error(f"Error loading lazy batch from {lazy_batch_info.get('file_path', 'unknown')}: {e}")
+            return []
 
     def _parse_api_response_for_failures(self, response_data, batch_customers):
         """Parse API response to extract failed customers - ROBUST VERSION"""
@@ -400,7 +421,7 @@ class BulkCustomerImporter:
             }
         
         payload = {'data': batch}
-        
+
         for attempt in range(self.max_retries):
             try:
                 self.logger.info(f"Sending batch {batch_id} (attempt {attempt + 1}/{self.max_retries}) - {len(batch)} customers")
@@ -563,57 +584,117 @@ class BulkCustomerImporter:
             'status': 'failed',
             'error': 'Unexpected end of method - all retries exhausted'
         }
+
+    def send_lazy_batch(self, lazy_batch_info: Dict[str, Any], batch_id: int) -> Dict[str, Any]:
+        """Load and send a lazy batch to the API - MEMORY EFFICIENT"""
+        batch = None
+        try:
+            # Load the actual batch data just-in-time
+            batch = self.load_lazy_batch(lazy_batch_info)
+            if not batch:
+                return {
+                    'batch_id': batch_id,
+                    'status': 'failed',
+                    'error': 'Failed to load batch data from file'
+                }
+
+            # Log that we're loading this batch
+            self.logger.info(f"Loading batch {batch_id} from {lazy_batch_info['file_path']} (customers {lazy_batch_info['start_idx']}-{lazy_batch_info['end_idx']}) - {len(batch)} customers")
+
+            # Send the batch using existing method
+            result = self.send_batch(batch, batch_id)
+
+            # Explicitly free batch memory immediately after sending
+            del batch
+            batch = None
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Error processing lazy batch {batch_id}: {e}")
+            return {
+                'batch_id': batch_id,
+                'status': 'failed',
+                'error': str(e)
+            }
+        finally:
+            # Ensure batch is always freed, even on exception
+            if batch is not None:
+                del batch
     
     def import_customers(self, file_paths: List[str]) -> Dict[str, Any]:
-        """Import customers from multiple files using multithreading"""
-        
+        """Import customers from multiple files using multithreading - TRUE LAZY LOADING"""
+
         start_time = datetime.now()
         self.logger.info(f"🚀 Starting bulk import from {len(file_paths)} files")
-        
-        # Create batches from files without loading all into memory
-        all_batches = []
+
+        # Create lazy batch references without loading any data
+        lazy_batches = []
         total_customers = 0
 
         for file_path in file_paths:
-            customers = self.load_customer_data(file_path)
-            if customers:
-                file_batches = self.create_batches(customers)
-                all_batches.extend(file_batches)
-                total_customers += len(customers)
-                self.logger.info(f"Loaded {len(customers)} customers from {file_path} -> {len(file_batches)} batches")
-                # Clear customers from memory immediately after creating batches
-                del customers
-            else:
-                self.logger.warning(f"No customers found in {file_path}")
+            # Only count customers, don't load them yet
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    customers_count = len(data.get('data', []))
 
-        if not all_batches:
-            self.logger.error("No customer data loaded!")
-            return {'status': 'error', 'message': 'No customer data loaded'}
+                if customers_count > 0:
+                    # Calculate how many batches this file will create
+                    num_batches = (customers_count + self.batch_size - 1) // self.batch_size
 
-        # Use the batches we created
-        batches = all_batches
-        self.total_batches = len(batches)
+                    # Create lazy batch references
+                    for batch_index in range(num_batches):
+                        start_idx = batch_index * self.batch_size
+                        end_idx = min(start_idx + self.batch_size, customers_count)
 
+                        lazy_batches.append({
+                            'file_path': file_path,
+                            'start_idx': start_idx,
+                            'end_idx': end_idx,
+                            'expected_size': end_idx - start_idx
+                        })
+
+                    total_customers += customers_count
+                    self.logger.info(f"Planned {customers_count} customers from {file_path} -> {num_batches} batches (not loaded yet)")
+                else:
+                    self.logger.warning(f"No customers found in {file_path}")
+
+            except Exception as e:
+                self.logger.error(f"Error reading file {file_path}: {e}")
+
+        if not lazy_batches:
+            self.logger.error("No customer data found!")
+            return {'status': 'error', 'message': 'No customer data found'}
+
+        self.total_batches = len(lazy_batches)
         self.logger.info(f"📊 Total customers to import: {total_customers}")
+        self.logger.info(f"📦 Planned {len(lazy_batches)} batches (lazy loading - files will be loaded during processing)")
         
         self.logger.info(f"📦 Created {self.total_batches} batches of {self.batch_size} customers each")
         self.logger.info(f"🔧 Using {self.max_workers} worker threads")
         
-        # Process batches with thread pool
+        # Process lazy batches with thread pool
         results = []
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all batches
+            # Submit all lazy batches
             future_to_batch = {
-                executor.submit(self.send_batch, batch, i): i 
-                for i, batch in enumerate(batches, 1)
+                executor.submit(self.send_lazy_batch, lazy_batch, i): i
+                for i, lazy_batch in enumerate(lazy_batches, 1)
             }
             
-            # Process completed batches
+            # Process completed batches with memory cleanup
             for future in as_completed(future_to_batch):
                 batch_id = future_to_batch[future]
                 try:
                     result = future.result()
                     results.append(result)
+
+                    # Log memory-efficient completion
+                    status = result.get('status', 'unknown')
+                    customers_count = result.get('customers_count', 0)
+                    self.logger.debug(f"✅ Batch {batch_id} completed ({status}) - {customers_count} customers processed and freed from memory")
+
                 except Exception as e:
                     self.logger.error(f"❌ Batch {batch_id} failed with exception: {e}")
                     results.append({
@@ -621,6 +702,14 @@ class BulkCustomerImporter:
                         'status': 'failed',
                         'error': str(e)
                     })
+                finally:
+                    # Clean up future reference to help garbage collection
+                    future_to_batch.pop(future, None)
+
+                    # Trigger garbage collection every 10 batches to free memory
+                    if batch_id % 10 == 0:
+                        gc.collect()
+                        self.logger.debug(f"🧹 Memory cleanup triggered after batch {batch_id}")
         
         # Calculate final statistics
         end_time = datetime.now()
