@@ -570,20 +570,31 @@ class BulkCustomerImporter:
         start_time = datetime.now()
         self.logger.info(f"🚀 Starting bulk import from {len(file_paths)} files")
         
-        # Load all customer data
-        all_customers = []
+        # Create batches from files without loading all into memory
+        all_batches = []
+        total_customers = 0
+
         for file_path in file_paths:
             customers = self.load_customer_data(file_path)
-            all_customers.extend(customers)
-            self.logger.info(f"Loaded {len(customers)} customers from {file_path}")
-        
-        if not all_customers:
+            if customers:
+                file_batches = self.create_batches(customers)
+                all_batches.extend(file_batches)
+                total_customers += len(customers)
+                self.logger.info(f"Loaded {len(customers)} customers from {file_path} -> {len(file_batches)} batches")
+                # Clear customers from memory immediately after creating batches
+                del customers
+            else:
+                self.logger.warning(f"No customers found in {file_path}")
+
+        if not all_batches:
             self.logger.error("No customer data loaded!")
             return {'status': 'error', 'message': 'No customer data loaded'}
-        
-        # Create batches
-        batches = self.create_batches(all_customers)
+
+        # Use the batches we created
+        batches = all_batches
         self.total_batches = len(batches)
+
+        self.logger.info(f"📊 Total customers to import: {total_customers}")
         
         self.logger.info(f"📦 Created {self.total_batches} batches of {self.batch_size} customers each")
         self.logger.info(f"🔧 Using {self.max_workers} worker threads")
@@ -618,7 +629,7 @@ class BulkCustomerImporter:
         successful_batches = len([r for r in results if r.get('status') == 'success'])
         failed_batches = len([r for r in results if r.get('status') == 'failed'])
         
-        total_customers = len(all_customers)
+        # Use the total_customers we calculated during loading
         successful_customers = successful_batches * self.batch_size
         
         summary = {

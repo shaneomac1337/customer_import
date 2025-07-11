@@ -11,6 +11,7 @@ import os
 from datetime import datetime
 import queue
 import sys
+import time
 
 # Import our bulk importer
 from bulk_import_multithreaded import BulkCustomerImporter
@@ -43,7 +44,11 @@ class BulkImportGUI:
         
         # Progress tracking
         self.progress_queue = queue.Queue()
+        self.file_loading_queue = queue.Queue()
         self.current_importer = None
+
+        # Cache for customer counts to avoid re-reading files
+        self.customer_count_cache = {}
         
         self.create_widgets()
         self.check_progress_queue()
@@ -349,17 +354,42 @@ class BulkImportGUI:
     def add_directory(self):
         """Add all JSON files from a directory"""
         directory = filedialog.askdirectory(title="Select Directory with Customer Files")
-        
+
         if directory:
+            # First, quickly count JSON files
             json_files = [f for f in os.listdir(directory) if f.endswith('.json')]
-            
+
+            if not json_files:
+                messagebox.showinfo("No Files", "No JSON files found in the selected directory.")
+                return
+
+            # Show confirmation for large directories
+            if len(json_files) > 1000:
+                result = messagebox.askyesno(
+                    "Large Directory",
+                    f"Found {len(json_files):,} JSON files in the directory.\n\n"
+                    f"Loading this many files may take several minutes.\n"
+                    f"Do you want to continue?",
+                    icon='warning'
+                )
+                if not result:
+                    return
+
+            # Add files to selection (fast operation)
+            added_count = 0
             for file in json_files:
                 full_path = os.path.join(directory, file)
                 if full_path not in self.selected_files:
                     self.selected_files.append(full_path)
-            
-            self.update_file_list()
-            self.log_message(f"Added {len(json_files)} files from {directory}")
+                    added_count += 1
+
+            # Show progress dialog for file processing
+            if len(self.selected_files) > 500:
+                self.show_file_loading_progress()
+            else:
+                self.update_file_list()
+
+            self.log_message(f"Added {added_count} files from {directory} ({len(json_files)} total found)")
     
 
     def clear_files(self):
@@ -367,6 +397,187 @@ class BulkImportGUI:
         self.selected_files.clear()
         self.update_file_list()
         self.log_message("Cleared all selected files")
+
+    def show_file_loading_progress(self):
+        """Show progress dialog for file loading"""
+        # Create progress dialog
+        self.progress_dialog = tk.Toplevel(self.root)
+        self.progress_dialog.title("Loading Files")
+        self.progress_dialog.geometry("400x150")
+        self.progress_dialog.resizable(False, False)
+        self.progress_dialog.transient(self.root)
+        self.progress_dialog.grab_set()
+
+        # Center the dialog
+        self.progress_dialog.geometry("+%d+%d" % (
+            self.root.winfo_rootx() + 50,
+            self.root.winfo_rooty() + 50
+        ))
+
+        # Progress dialog content
+        ttk.Label(self.progress_dialog, text="Loading and analyzing files...", font=('Arial', 10)).pack(pady=10)
+
+        self.file_progress_var = tk.DoubleVar()
+        self.file_progress_bar = ttk.Progressbar(
+            self.progress_dialog,
+            variable=self.file_progress_var,
+            maximum=100,
+            length=350
+        )
+        self.file_progress_bar.pack(pady=10)
+
+        self.file_progress_label = ttk.Label(self.progress_dialog, text="Preparing...")
+        self.file_progress_label.pack(pady=5)
+
+        # Cancel button
+        cancel_frame = ttk.Frame(self.progress_dialog)
+        cancel_frame.pack(pady=10)
+
+        self.cancel_loading = False
+        ttk.Button(cancel_frame, text="Cancel", command=self.cancel_file_loading).pack()
+
+        # Start background processing
+        self.file_loading_thread = threading.Thread(target=self.process_files_background, daemon=True)
+        self.file_loading_thread.start()
+
+        # Start checking for updates
+        self.check_file_loading_progress()
+
+    def cancel_file_loading(self):
+        """Cancel file loading process"""
+        self.cancel_loading = True
+        self.progress_dialog.destroy()
+        self.log_message("File loading cancelled by user")
+
+    def process_files_background(self):
+        """Process files in background thread"""
+        try:
+            total_files = len(self.selected_files)
+            processed = 0
+
+            # Create file info cache
+            file_info_cache = []
+
+            for file_path in self.selected_files:
+                if self.cancel_loading:
+                    return
+
+                try:
+                    # Get file info
+                    file_size = os.path.getsize(file_path)
+
+                    # Try to count customers (this is the slow part)
+                    customer_count = 0
+                    status = "Valid"
+
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        customer_count = len(data.get('data', []))
+                    except Exception as e:
+                        status = f"Error: {str(e)[:30]}..."
+
+                    file_info_cache.append({
+                        'path': file_path,
+                        'name': os.path.basename(file_path),
+                        'size': file_size,
+                        'customers': customer_count,
+                        'status': status
+                    })
+
+                except Exception as e:
+                    file_info_cache.append({
+                        'path': file_path,
+                        'name': os.path.basename(file_path),
+                        'size': 0,
+                        'customers': 0,
+                        'status': f"Error: {str(e)[:30]}..."
+                    })
+
+                processed += 1
+
+                # Update progress (put in queue for main thread)
+                progress_percent = (processed / total_files) * 100
+                self.file_loading_queue.put(('progress', progress_percent, processed, total_files))
+
+                # Small delay to keep GUI responsive
+                time.sleep(0.001)
+
+            # Send completion signal
+            if not self.cancel_loading:
+                self.file_loading_queue.put(('complete', file_info_cache))
+
+        except Exception as e:
+            self.file_loading_queue.put(('error', str(e)))
+
+    def check_file_loading_progress(self):
+        """Check for file loading progress updates"""
+        try:
+            while True:
+                message_type, *data = self.file_loading_queue.get_nowait()
+
+                if message_type == 'progress':
+                    progress_percent, processed, total = data
+                    self.file_progress_var.set(progress_percent)
+                    self.file_progress_label.config(text=f"Processing file {processed:,} of {total:,}...")
+
+                elif message_type == 'complete':
+                    file_info_cache = data[0]
+                    self.file_progress_var.set(100)
+                    self.file_progress_label.config(text="Updating display...")
+
+                    # Update the file list with cached data
+                    self.update_file_list_with_cache(file_info_cache)
+
+                    # Close progress dialog
+                    self.progress_dialog.destroy()
+                    self.log_message(f"Successfully loaded {len(file_info_cache):,} files")
+                    return
+
+                elif message_type == 'error':
+                    error_msg = data[0]
+                    self.progress_dialog.destroy()
+                    messagebox.showerror("Loading Error", f"Error loading files: {error_msg}")
+                    self.log_message(f"Error loading files: {error_msg}")
+                    return
+
+        except queue.Empty:
+            pass
+
+        # Schedule next check if dialog still exists
+        if hasattr(self, 'progress_dialog') and self.progress_dialog.winfo_exists():
+            self.root.after(100, self.check_file_loading_progress)
+
+    def update_file_list_with_cache(self, file_info_cache):
+        """Update file list using pre-processed cache data"""
+        # Clear existing items
+        for item in self.file_tree.get_children():
+            self.file_tree.delete(item)
+
+        total_customers = 0
+        total_size = 0
+
+        # Clear and rebuild customer count cache
+        self.customer_count_cache = {}
+
+        for file_info in file_info_cache:
+            # Add to tree
+            self.file_tree.insert("", tk.END, values=(
+                file_info['name'],
+                file_info['customers'],
+                f"{file_info['size']:,} bytes",
+                file_info['status']
+            ))
+
+            # Cache customer count for fast access later
+            self.customer_count_cache[file_info['path']] = file_info['customers']
+
+            if file_info['status'] == "Valid":
+                total_customers += file_info['customers']
+            total_size += file_info['size']
+
+        # Update summary
+        self.files_summary.config(text=f"{len(self.selected_files)} files selected, {total_customers:,} customers, {total_size:,} bytes")
     
     def update_file_list(self):
         """Update the file list display"""
@@ -392,8 +603,12 @@ class BulkImportGUI:
                         data = json.load(f)
                     customer_count = len(data.get('data', []))
                     total_customers += customer_count
+                    # Cache the customer count
+                    self.customer_count_cache[file_path] = customer_count
                 except Exception as e:
                     status = f"Error: {str(e)[:30]}..."
+                    # Cache zero for error files
+                    self.customer_count_cache[file_path] = 0
                 
                 # Add to tree
                 self.file_tree.insert("", tk.END, values=(
@@ -796,11 +1011,19 @@ Check the RETRY_INSTRUCTIONS.md file in the retry directory for detailed instruc
             messagebox.showerror("Error", f"Failed to load retry files:\n{e}")
     
     def count_customers_in_file(self, file_path):
-        """Count customers in a file"""
+        """Count customers in a file - uses cache if available"""
+        # Check cache first (fast!)
+        if file_path in self.customer_count_cache:
+            return self.customer_count_cache[file_path]
+
+        # Fallback to reading file (slow, but safe)
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            return len(data.get('data', []))
+            count = len(data.get('data', []))
+            # Cache the result for next time
+            self.customer_count_cache[file_path] = count
+            return count
         except:
             return 0
     
