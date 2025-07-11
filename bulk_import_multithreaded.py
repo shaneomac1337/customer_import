@@ -359,6 +359,38 @@ class BulkCustomerImporter:
             except Exception as e:
                 self.logger.error(f"❌ Error saving failed batch {batch_id}: {e}")
 
+    def _save_response_nok_batch(self, batch: List[Dict[Any, Any]], batch_id: int, status_code: int, response_text: str):
+        """Save batch that failed with non-200 HTTP response to response_nok directory"""
+        with self.failed_customers_lock:
+            # Create timestamped response_nok directory
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            response_nok_dir = os.path.join("failed_customers", f"response_nok_{timestamp}")
+            os.makedirs(response_nok_dir, exist_ok=True)
+
+            # Create filename with batch number and status code
+            batch_filename = f"batch_{batch_id:03d}_status_{status_code}.json"
+            batch_filepath = os.path.join(response_nok_dir, batch_filename)
+
+            # Save the batch in the same format as the original API call
+            batch_data = {
+                "data": batch,
+                "error_info": {
+                    "batch_id": batch_id,
+                    "status_code": status_code,
+                    "response_text": response_text[:500],  # Limit response text length
+                    "timestamp": datetime.now().isoformat(),
+                    "customer_count": len(batch)
+                }
+            }
+
+            try:
+                with open(batch_filepath, 'w', encoding='utf-8') as f:
+                    json.dump(batch_data, f, indent=2, ensure_ascii=False)
+                self.logger.info(f"[RESPONSE_NOK] Saved non-200 batch {batch_id} (HTTP {status_code}) to {batch_filepath}")
+            except Exception as e:
+                self.logger.error(f"❌ Error saving response_nok batch {batch_id}: {e}")
+
     def get_failed_customers_summary(self):
         """Get summary of failed customers"""
         with self.failed_customers_lock:
@@ -548,6 +580,9 @@ class BulkCustomerImporter:
                                 'error_data': error_data,
                                 'status_code': response.status_code
                             })
+
+                        # Save non-200 response batch to response_nok folder
+                        self._save_response_nok_batch(batch, batch_id, response.status_code, response.text)
                         return {
                             'batch_id': batch_id,
                             'status': 'failed',
