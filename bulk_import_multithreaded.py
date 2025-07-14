@@ -39,9 +39,6 @@ class BulkCustomerImporter:
         failed_customers_dir = "failed_customers"
         os.makedirs(failed_customers_dir, exist_ok=True)
 
-        # Create single_failures directory structure proactively
-        self._ensure_single_failures_structure()
-
         # Set failed customers file path in the dedicated folder
         if not os.path.dirname(failed_customers_file):
             # If no directory specified, put it in failed_customers folder
@@ -142,11 +139,14 @@ The structure helps organize failures by type for easier handling and retry.
 """
                 with open(readme_path, 'w', encoding='utf-8') as f:
                     f.write(readme_content)
+                self.logger.info(f"Created single_failures directory structure with README")
 
-            self.logger.info(f"Single failures directory structure ready: {single_failures_base}")
+            # Structure is ready (either existed or just created)
 
         except Exception as e:
-            self.logger.warning(f"Could not create single_failures structure: {e}")
+            self.logger.error(f"Could not create single_failures structure: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
         
         # Setup logging
         logging.basicConfig(
@@ -158,7 +158,10 @@ The structure helps organize failures by type for easier handling and retry.
             ]
         )
         self.logger = logging.getLogger(__name__)
-        
+
+        # Create single_failures directory structure proactively
+        self._ensure_single_failures_structure()
+
         # Progress tracking
         self.total_batches = 0
         self.completed_batches = 0
