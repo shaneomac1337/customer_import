@@ -77,6 +77,14 @@ class BulkCustomerImporter:
         self.auth_service_down = False
         self.last_auth_check = None
         self.auth_check_interval = 300  # Check auth service every 5 minutes
+
+        # Import control
+        self.should_stop = False
+        self.is_paused = False
+        self.pause_event = threading.Event()
+        self.pause_event.set()  # Start unpaused
+        self.processed_batches = 0
+        self.remaining_batches = []
         
         # Setup logging
         logging.basicConfig(
@@ -204,6 +212,34 @@ class BulkCustomerImporter:
 
         time_since_check = (datetime.now() - self.last_auth_check).total_seconds()
         return time_since_check >= self.auth_check_interval
+
+    def stop_import(self):
+        """Stop the import process gracefully"""
+        self.should_stop = True
+        self.logger.info("🛑 STOP REQUESTED - Import will stop after current batches complete")
+
+    def pause_import(self):
+        """Pause the import process"""
+        self.is_paused = True
+        self.pause_event.clear()
+        self.logger.info("⏸️ PAUSE REQUESTED - Import will pause after current batches complete")
+
+    def resume_import(self):
+        """Resume the paused import process"""
+        if self.is_paused:
+            self.is_paused = False
+            self.pause_event.set()
+            self.logger.info("▶️ RESUME REQUESTED - Import will continue")
+
+    def get_import_status(self) -> Dict[str, Any]:
+        """Get current import status"""
+        return {
+            'should_stop': self.should_stop,
+            'is_paused': self.is_paused,
+            'processed_batches': self.processed_batches,
+            'remaining_batches': len(self.remaining_batches),
+            'auth_service_down': self.auth_service_down
+        }
     
     def load_customer_data(self, file_path: str) -> List[Dict[Any, Any]]:
         """Load customer data from JSON file"""
@@ -488,6 +524,41 @@ class BulkCustomerImporter:
             except Exception as e:
                 self.logger.error(f"❌ Error saving auth service failure batch {batch_id}: {e}")
 
+    def save_remaining_work(self, reason: str = "stopped"):
+        """Save remaining work for resume functionality"""
+        if not self.remaining_batches:
+            return None
+
+        try:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            resume_dir = os.path.join("failed_customers", f"resume_work_{timestamp}")
+            os.makedirs(resume_dir, exist_ok=True)
+
+            # Save remaining batch info
+            resume_filename = f"remaining_batches_{reason}.json"
+            resume_filepath = os.path.join(resume_dir, resume_filename)
+
+            resume_data = {
+                "reason": reason,
+                "timestamp": datetime.now().isoformat(),
+                "processed_batches": self.processed_batches,
+                "total_batches": self.total_batches,
+                "remaining_batches": self.remaining_batches,
+                "auth_service_down": self.auth_service_down,
+                "resume_instructions": "Use this file to resume the import from where it left off"
+            }
+
+            with open(resume_filepath, 'w', encoding='utf-8') as f:
+                json.dump(resume_data, f, indent=2, ensure_ascii=False)
+
+            self.logger.info(f"💾 SAVED REMAINING WORK: {len(self.remaining_batches)} batches saved to {resume_filepath}")
+            return resume_filepath
+
+        except Exception as e:
+            self.logger.error(f"❌ Error saving remaining work: {e}")
+            return None
+
     def get_failed_customers_summary(self):
         """Get summary of failed customers"""
         with self.failed_customers_lock:
@@ -746,9 +817,34 @@ class BulkCustomerImporter:
         }
 
     def send_lazy_batch(self, lazy_batch_info: Dict[str, Any], batch_id: int) -> Dict[str, Any]:
-        """Load and send a lazy batch to the API - MEMORY EFFICIENT"""
+        """Load and send a lazy batch to the API - MEMORY EFFICIENT WITH STOP/PAUSE SUPPORT"""
         batch = None
         try:
+            # Check if we should stop before processing
+            if self.should_stop:
+                self.logger.info(f"🛑 STOPPING - Batch {batch_id} not processed due to stop request")
+                return {
+                    'batch_id': batch_id,
+                    'status': 'stopped',
+                    'error': 'Import stopped by user request'
+                }
+
+            # Wait if paused
+            if self.is_paused:
+                self.logger.info(f"⏸️ PAUSED - Batch {batch_id} waiting for resume...")
+                self.pause_event.wait()  # Block until resumed
+
+                # Check if stop was requested while paused
+                if self.should_stop:
+                    self.logger.info(f"🛑 STOPPING - Batch {batch_id} not processed (stopped while paused)")
+                    return {
+                        'batch_id': batch_id,
+                        'status': 'stopped',
+                        'error': 'Import stopped while paused'
+                    }
+
+                self.logger.info(f"▶️ RESUMED - Batch {batch_id} continuing...")
+
             # Load the actual batch data just-in-time
             batch = self.load_lazy_batch(lazy_batch_info)
             if not batch:
@@ -763,6 +859,9 @@ class BulkCustomerImporter:
 
             # Send the batch using existing method
             result = self.send_batch(batch, batch_id)
+
+            # Update processed count
+            self.processed_batches += 1
 
             # Explicitly free batch memory immediately after sending
             del batch
@@ -828,6 +927,7 @@ class BulkCustomerImporter:
             return {'status': 'error', 'message': 'No customer data found'}
 
         self.total_batches = len(lazy_batches)
+        self.remaining_batches = lazy_batches.copy()  # Track remaining work
         self.logger.info(f"📊 Total customers to import: {total_customers}")
         self.logger.info(f"📦 Planned {len(lazy_batches)} batches (lazy loading - files will be loaded during processing)")
         
@@ -844,11 +944,20 @@ class BulkCustomerImporter:
             }
             
             # Process completed batches with memory cleanup
+            stopped_batches = []
             for future in as_completed(future_to_batch):
                 batch_id = future_to_batch[future]
                 try:
                     result = future.result()
                     results.append(result)
+
+                    # Track stopped batches for resume functionality
+                    if result.get('status') == 'stopped':
+                        stopped_batches.append(batch_id)
+                        self.logger.info(f"🛑 Batch {batch_id} stopped - can be resumed later")
+                    else:
+                        # Remove from remaining batches (completed or failed)
+                        self.remaining_batches = [b for b in self.remaining_batches if lazy_batches[batch_id-1] != b]
 
                     # Log memory-efficient completion
                     status = result.get('status', 'unknown')
@@ -870,6 +979,11 @@ class BulkCustomerImporter:
                     if batch_id % 10 == 0:
                         gc.collect()
                         self.logger.debug(f"🧹 Memory cleanup triggered after batch {batch_id}")
+
+                    # Check if we should auto-pause due to auth service issues
+                    if self.auth_service_down and not self.is_paused and not self.should_stop:
+                        self.logger.error("🚨 AUTO-PAUSING due to auth service being down")
+                        self.pause_import()
         
         # Calculate final statistics
         end_time = datetime.now()
@@ -877,7 +991,8 @@ class BulkCustomerImporter:
         
         successful_batches = len([r for r in results if r.get('status') == 'success'])
         failed_batches = len([r for r in results if r.get('status') == 'failed'])
-        
+        stopped_batches = len([r for r in results if r.get('status') == 'stopped'])
+
         # Use the total_customers we calculated during loading
         successful_customers = successful_batches * self.batch_size
         
@@ -899,8 +1014,28 @@ class BulkCustomerImporter:
         self.logger.info(f"   Total customers: {total_customers}")
         self.logger.info(f"   Successful: {successful_customers}")
         self.logger.info(f"   Failed: {failed_batches * self.batch_size}")
+        if stopped_batches > 0:
+            self.logger.info(f"   Stopped: {stopped_batches * self.batch_size}")
         self.logger.info(f"   Success rate: {summary['success_rate']}")
         self.logger.info(f"   Duration: {duration}")
+
+        # Handle stopped import
+        if stopped_batches > 0 or self.should_stop:
+            if self.should_stop:
+                reason = "user_stop"
+                self.logger.info("🛑 IMPORT STOPPED by user request")
+            elif self.auth_service_down:
+                reason = "auth_service_down"
+                self.logger.info("🛑 IMPORT STOPPED due to auth service issues")
+            else:
+                reason = "unknown"
+                self.logger.info("🛑 IMPORT STOPPED for unknown reason")
+
+            # Save remaining work for resume
+            resume_file = self.save_remaining_work(reason)
+            if resume_file:
+                self.logger.info(f"💾 Remaining work saved to: {resume_file}")
+                self.logger.info("   Use this file to resume the import later")
 
         # Check for auth service issues
         if self.auth_service_down:

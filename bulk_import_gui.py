@@ -234,7 +234,13 @@ class BulkImportGUI:
         
         self.start_button = ttk.Button(control_group, text="Start Import", command=self.start_import, style="Accent.TButton")
         self.start_button.pack(side=tk.LEFT, padx=5)
-        
+
+        self.pause_button = ttk.Button(control_group, text="Pause Import", command=self.pause_import, state=tk.DISABLED)
+        self.pause_button.pack(side=tk.LEFT, padx=5)
+
+        self.resume_button = ttk.Button(control_group, text="Resume Import", command=self.resume_import, state=tk.DISABLED)
+        self.resume_button.pack(side=tk.LEFT, padx=5)
+
         self.stop_button = ttk.Button(control_group, text="Stop Import", command=self.stop_import, state=tk.DISABLED)
         self.stop_button.pack(side=tk.LEFT, padx=5)
         
@@ -772,6 +778,8 @@ class BulkImportGUI:
         # Start import in separate thread
         self.import_running = True
         self.start_button.config(state=tk.DISABLED)
+        self.pause_button.config(state=tk.NORMAL)
+        self.resume_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
         
         self.import_thread = threading.Thread(target=self.run_import, daemon=True)
@@ -779,14 +787,30 @@ class BulkImportGUI:
         
         self.log_message(f"Started import of {total_customers:,} customers from {len(self.selected_files)} files")
     
+    def pause_import(self):
+        """Pause the import process"""
+        if self.import_running and self.current_importer:
+            self.current_importer.pause_import()
+            self.pause_button.config(state=tk.DISABLED)
+            self.resume_button.config(state=tk.NORMAL)
+            self.log_message("⏸️ Import paused - current batches will complete, then pause")
+            messagebox.showinfo("Pause Import", "Import paused. Click Resume to continue.")
+
+    def resume_import(self):
+        """Resume the paused import process"""
+        if self.import_running and self.current_importer:
+            self.current_importer.resume_import()
+            self.pause_button.config(state=tk.NORMAL)
+            self.resume_button.config(state=tk.DISABLED)
+            self.log_message("▶️ Import resumed")
+            messagebox.showinfo("Resume Import", "Import resumed.")
+
     def stop_import(self):
         """Stop the import process"""
-        if self.import_running:
-            self.import_running = False
-            self.log_message("Stopping import... (may take a moment)")
-            
-            # Note: The actual stopping mechanism would need to be implemented in the importer
-            messagebox.showinfo("Stop Import", "Import stop requested. Current batches will complete.")
+        if self.import_running and self.current_importer:
+            self.current_importer.stop_import()
+            self.log_message("🛑 Stopping import... (current batches will complete)")
+            messagebox.showinfo("Stop Import", "Import stop requested. Current batches will complete, then stop.\nRemaining work will be saved for resume.")
     
     def run_import(self):
         """Run the import process (in separate thread)"""
@@ -867,6 +891,8 @@ class BulkImportGUI:
     def handle_import_complete(self, result):
         """Handle import completion"""
         self.start_button.config(state=tk.NORMAL)
+        self.pause_button.config(state=tk.DISABLED)
+        self.resume_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.DISABLED)
         
         if result:
@@ -928,6 +954,8 @@ class BulkImportGUI:
     def handle_import_error(self, error_msg):
         """Handle import error"""
         self.start_button.config(state=tk.NORMAL)
+        self.pause_button.config(state=tk.DISABLED)
+        self.resume_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.DISABLED)
         self.progress_label.config(text="Import failed")
         
