@@ -82,8 +82,8 @@ def split_json_file(input_file, batch_size=100, output_dir="split_batches"):
                 "data": batch_customers
             }
             
-            # Generate filename
-            batch_filename = f"batch_{batch_num + 1:03d}_customers_{actual_batch_size}.json"
+            # Generate filename (5 digits for 50K+ files)
+            batch_filename = f"batch_{batch_num + 1:05d}_customers_{actual_batch_size}.json"
             batch_filepath = os.path.join(full_output_dir, batch_filename)
             
             # Save batch file

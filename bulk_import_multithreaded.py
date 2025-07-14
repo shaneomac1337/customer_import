@@ -71,6 +71,12 @@ class BulkCustomerImporter:
             self.auth_manager = None
             self.auth_token = auth_token
             self.gk_passport = gk_passport
+
+        # Authentication monitoring
+        self.auth_failures = []
+        self.auth_service_down = False
+        self.last_auth_check = None
+        self.auth_check_interval = 300  # Check auth service every 5 minutes
         
         # Setup logging
         logging.basicConfig(
@@ -140,6 +146,64 @@ class BulkCustomerImporter:
                 'has_token': bool(self.auth_token),
                 'token_preview': f"{self.auth_token[:20]}..." if self.auth_token else None
             }
+
+    def check_auth_service_health(self) -> Dict[str, Any]:
+        """Check if authentication service is healthy"""
+        if not self.auth_manager:
+            return {'healthy': True, 'message': 'Manual auth mode - no service check needed'}
+
+        try:
+            # Test authentication to check service health
+            result = self.auth_manager.test_authentication()
+
+            if result['success']:
+                self.auth_service_down = False
+                self.last_auth_check = datetime.now()
+                return {
+                    'healthy': True,
+                    'message': 'Auth service is healthy',
+                    'response_time_ms': result.get('response_time_ms', 0)
+                }
+            else:
+                # Check if it's a service down error (503, 502, 504)
+                error_msg = result.get('error', '').lower()
+                if any(code in error_msg for code in ['503', '502', '504', 'service unavailable', 'bad gateway', 'timeout']):
+                    self.auth_service_down = True
+                    self.logger.error(f"🚨 AUTH SERVICE DOWN: {result.get('error')}")
+                    return {
+                        'healthy': False,
+                        'service_down': True,
+                        'message': f"Auth service is down: {result.get('error')}",
+                        'error': result.get('error')
+                    }
+                else:
+                    return {
+                        'healthy': False,
+                        'service_down': False,
+                        'message': f"Auth service error: {result.get('error')}",
+                        'error': result.get('error')
+                    }
+
+        except Exception as e:
+            self.auth_service_down = True
+            self.logger.error(f"🚨 AUTH SERVICE CHECK FAILED: {e}")
+            return {
+                'healthy': False,
+                'service_down': True,
+                'message': f"Auth service check failed: {e}",
+                'error': str(e)
+            }
+
+    def should_check_auth_service(self) -> bool:
+        """Check if we should perform an auth service health check"""
+        if not self.auth_manager:
+            return False
+
+        if not self.last_auth_check:
+            return True
+
+        time_since_check = (datetime.now() - self.last_auth_check).total_seconds()
+        return time_since_check >= self.auth_check_interval
     
     def load_customer_data(self, file_path: str) -> List[Dict[Any, Any]]:
         """Load customer data from JSON file"""
@@ -343,8 +407,8 @@ class BulkCustomerImporter:
             retry_dir = os.path.join("failed_customers", f"batches_to_retry_{timestamp}")
             os.makedirs(retry_dir, exist_ok=True)
 
-            # Create filename with batch number
-            batch_filename = f"batch_{batch_id:03d}.json"
+            # Create filename with batch number (5 digits for 50K+ files)
+            batch_filename = f"batch_{batch_id:05d}.json"
             batch_filepath = os.path.join(retry_dir, batch_filename)
 
             # Save the batch in the same format as the original API call
@@ -368,8 +432,8 @@ class BulkCustomerImporter:
             response_nok_dir = os.path.join("failed_customers", f"response_nok_{timestamp}")
             os.makedirs(response_nok_dir, exist_ok=True)
 
-            # Create filename with batch number and status code
-            batch_filename = f"batch_{batch_id:03d}_status_{status_code}.json"
+            # Create filename with batch number and status code (5 digits for 50K+ files)
+            batch_filename = f"batch_{batch_id:05d}_status_{status_code}.json"
             batch_filepath = os.path.join(response_nok_dir, batch_filename)
 
             # Save the batch in the same format as the original API call
@@ -390,6 +454,39 @@ class BulkCustomerImporter:
                 self.logger.info(f"[RESPONSE_NOK] Saved non-200 batch {batch_id} (HTTP {status_code}) to {batch_filepath}")
             except Exception as e:
                 self.logger.error(f"❌ Error saving response_nok batch {batch_id}: {e}")
+
+    def _save_auth_service_failure_batch(self, batch: List[Dict[Any, Any]], batch_id: int, error_message: str):
+        """Save batch that failed due to auth service being down to auth_service_down directory"""
+        with self.failed_customers_lock:
+            # Create timestamped auth_service_down directory
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            auth_down_dir = os.path.join("failed_customers", f"auth_service_down_{timestamp}")
+            os.makedirs(auth_down_dir, exist_ok=True)
+
+            # Create filename with batch number
+            batch_filename = f"batch_{batch_id:05d}_auth_service_down.json"
+            batch_filepath = os.path.join(auth_down_dir, batch_filename)
+
+            # Save the batch with auth service error info
+            batch_data = {
+                "data": batch,
+                "auth_service_error": {
+                    "batch_id": batch_id,
+                    "error_message": error_message,
+                    "timestamp": datetime.now().isoformat(),
+                    "customer_count": len(batch),
+                    "error_type": "auth_service_down",
+                    "retry_instructions": "Wait for auth service to be restored, then retry this batch"
+                }
+            }
+
+            try:
+                with open(batch_filepath, 'w', encoding='utf-8') as f:
+                    json.dump(batch_data, f, indent=2, ensure_ascii=False)
+                self.logger.error(f"[AUTH_SERVICE_DOWN] Saved batch {batch_id} to {batch_filepath}")
+            except Exception as e:
+                self.logger.error(f"❌ Error saving auth service failure batch {batch_id}: {e}")
 
     def get_failed_customers_summary(self):
         """Get summary of failed customers"""
@@ -433,17 +530,45 @@ class BulkCustomerImporter:
         # Rate limiting
         self.rate_limit()
 
+        # Check auth service health periodically
+        if self.should_check_auth_service():
+            health_check = self.check_auth_service_health()
+            if not health_check['healthy'] and health_check.get('service_down'):
+                self.logger.error(f"🚨 AUTH SERVICE DOWN - Aborting batch {batch_id}")
+                # Save this as an auth service failure
+                self._save_auth_service_failure_batch(batch, batch_id, health_check['error'])
+                return {
+                    'batch_id': batch_id,
+                    'status': 'failed',
+                    'error': f'Auth service down: {health_check["error"]}',
+                    'error_type': 'auth_service_down'
+                }
+
         # Get authentication headers (with automatic refresh if needed)
         if self.auth_manager:
             try:
                 headers = self.auth_manager.get_auth_headers()
             except Exception as e:
                 self.logger.error(f"❌ Authentication failed for batch {batch_id}: {e}")
-                return {
-                    'batch_id': batch_id,
-                    'status': 'failed',
-                    'error': f'Authentication failed: {e}'
-                }
+
+                # Check if this is an auth service down error
+                error_msg = str(e).lower()
+                if any(code in error_msg for code in ['503', '502', '504', 'service unavailable', 'bad gateway']):
+                    self.auth_service_down = True
+                    self._save_auth_service_failure_batch(batch, batch_id, str(e))
+                    return {
+                        'batch_id': batch_id,
+                        'status': 'failed',
+                        'error': f'Auth service down: {e}',
+                        'error_type': 'auth_service_down'
+                    }
+                else:
+                    return {
+                        'batch_id': batch_id,
+                        'status': 'failed',
+                        'error': f'Authentication failed: {e}',
+                        'error_type': 'auth_failed'
+                    }
         else:
             # Legacy manual token mode
             headers = {
@@ -776,7 +901,22 @@ class BulkCustomerImporter:
         self.logger.info(f"   Failed: {failed_batches * self.batch_size}")
         self.logger.info(f"   Success rate: {summary['success_rate']}")
         self.logger.info(f"   Duration: {duration}")
-        
+
+        # Check for auth service issues
+        if self.auth_service_down:
+            self.logger.error("🚨 AUTH SERVICE WAS DOWN during import!")
+            self.logger.error("   Some failures may be due to auth service issues")
+            self.logger.error("   Check auth_service_down_* directories for affected batches")
+
+        # Categorize failures by type
+        auth_failures = len([r for r in results if r.get('error_type') == 'auth_service_down'])
+        api_failures = failed_batches - auth_failures
+
+        if auth_failures > 0:
+            self.logger.error(f"   Auth service failures: {auth_failures} batches")
+        if api_failures > 0:
+            self.logger.error(f"   API failures: {api_failures} batches")
+
         # Save failed batches for retry
         if self.failed_batches:
             self.save_failed_batches()
@@ -804,8 +944,8 @@ class BulkCustomerImporter:
                 "data": failed_batch['customers']
             }
 
-            # Generate filename
-            retry_filename = f"retry_batch_{i:02d}_failed.json"
+            # Generate filename (5 digits for 50K+ files)
+            retry_filename = f"retry_batch_{i:05d}_failed.json"
             retry_filepath = os.path.join(retry_dir, retry_filename)
 
             # Save the batch
