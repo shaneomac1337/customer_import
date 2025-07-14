@@ -39,6 +39,9 @@ class BulkCustomerImporter:
         failed_customers_dir = "failed_customers"
         os.makedirs(failed_customers_dir, exist_ok=True)
 
+        # Create single_failures directory structure proactively
+        self._ensure_single_failures_structure()
+
         # Set failed customers file path in the dedicated folder
         if not os.path.dirname(failed_customers_file):
             # If no directory specified, put it in failed_customers folder
@@ -85,6 +88,65 @@ class BulkCustomerImporter:
         self.pause_event.set()  # Start unpaused
         self.processed_batches = 0
         self.remaining_batches = []
+
+    def _ensure_single_failures_structure(self):
+        """Create the single_failures directory structure proactively"""
+        try:
+            single_failures_base = os.path.join("failed_customers", "single_failures")
+            os.makedirs(single_failures_base, exist_ok=True)
+
+            # Create README if it doesn't exist
+            readme_path = os.path.join(single_failures_base, "README.md")
+            if not os.path.exists(readme_path):
+                readme_content = """# Single Failures Directory Structure
+
+This directory will contain individual failed customers organized by failure reason when imports have failures.
+
+## Directory Structure (Created Automatically):
+```
+single_failures/
+├── CONFLICT/          # Customers that failed due to conflicts (duplicates, etc.)
+├── FAILED/            # Customers that failed due to validation or business logic
+├── ERROR/             # Customers that failed due to system errors
+└── UNKNOWN/           # Customers with unrecognized failure reasons
+```
+
+**Note**: Directories are created automatically when customers fail during import.
+
+## File Types:
+- **customer_*.json** - Individual customer files in direct import format
+- **_SUMMARY_*.json** - Summary files with overview of each failure type
+
+## How to Use:
+1. **Individual Retry**: Use any customer_*.json file to retry a single customer
+2. **Batch Retry**: Collect multiple customers and create a batch for retry
+3. **Analysis**: Use summary files to understand failure patterns
+
+## File Format:
+Each customer file is in **clean import format** (identical to retry batches):
+```json
+{
+  "data": [
+    {
+      // Complete customer data ready for import
+    }
+  ]
+}
+```
+
+**Ready for Direct Import**: Just drag and drop any customer_*.json file into the import tool!
+
+## Auto-Generated:
+These folders and files are automatically created when customers fail during import.
+The structure helps organize failures by type for easier handling and retry.
+"""
+                with open(readme_path, 'w', encoding='utf-8') as f:
+                    f.write(readme_content)
+
+            self.logger.info(f"Single failures directory structure ready: {single_failures_base}")
+
+        except Exception as e:
+            self.logger.warning(f"Could not create single_failures structure: {e}")
         
         # Setup logging
         logging.basicConfig(
@@ -419,20 +481,113 @@ class BulkCustomerImporter:
         return failed_customers
 
     def _save_failed_customers(self, failed_customers):
-        """Save failed customers to file"""
+        """Save failed customers to file and organize by failure reason"""
         if not failed_customers:
             return
 
         with self.failed_customers_lock:
             self.failed_customers.extend(failed_customers)
 
-            # Save to file
+            # Save to main file (existing functionality)
             try:
                 with open(self.failed_customers_file, 'w', encoding='utf-8') as f:
                     json.dump(self.failed_customers, f, indent=2, ensure_ascii=False)
                 logging.info(f"Saved {len(failed_customers)} failed customers to {self.failed_customers_file}")
             except Exception as e:
                 logging.error(f"Error saving failed customers to file: {e}")
+
+            # NEW: Save individual customers organized by failure reason
+            self._save_individual_failed_customers_by_reason(failed_customers)
+
+    def _save_individual_failed_customers_by_reason(self, failed_customers: List[Dict[str, Any]]):
+        """Save individual failed customers organized by failure reason (CONFLICT, FAILED, ERROR)"""
+        if not failed_customers:
+            return
+
+        try:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            # Group customers by failure reason
+            customers_by_reason = {
+                'CONFLICT': [],
+                'FAILED': [],
+                'ERROR': [],
+                'UNKNOWN': []  # For customers with unrecognized failure reasons
+            }
+
+            for customer in failed_customers:
+                result = customer.get('result', '').upper()
+                if result in customers_by_reason:
+                    customers_by_reason[result].append(customer)
+                else:
+                    # Handle any other failure reasons by putting them in UNKNOWN
+                    customers_by_reason['UNKNOWN'].append(customer)
+                    self.logger.warning(f"Unknown failure reason '{result}' for customer {customer.get('customerId', 'Unknown')}")
+
+            # Save each group to separate folders
+            for reason, customers in customers_by_reason.items():
+                if not customers:  # Skip empty groups
+                    continue
+
+                # Create directory structure: failed_customers/single_failures/REASON
+                base_single_failures_dir = os.path.join("failed_customers", "single_failures")
+                reason_dir = os.path.join(base_single_failures_dir, reason)
+                os.makedirs(reason_dir, exist_ok=True)
+
+                # Save each customer as individual file
+                for i, customer in enumerate(customers, 1):
+                    customer_id = customer.get('customerId', f'unknown_{i}')
+                    username = customer.get('username', f'unknown_user_{i}')
+
+                    # Create safe filename (remove invalid characters)
+                    safe_customer_id = "".join(c for c in str(customer_id) if c.isalnum() or c in ('-', '_'))
+                    safe_username = "".join(c for c in str(username) if c.isalnum() or c in ('-', '_'))
+
+                    customer_filename = f"customer_{safe_customer_id}_{safe_username}.json"
+                    customer_filepath = os.path.join(reason_dir, customer_filename)
+
+                    # Prepare customer data in direct import format (exactly like retry batches)
+                    original_data = customer.get('originalData')
+                    if original_data:
+                        # Format exactly like retry batches - pure data only, no metadata
+                        customer_data = {
+                            "data": [original_data]
+                        }
+                    else:
+                        # Skip customers without original data
+                        self.logger.warning(f"Skipping customer {customer.get('customerId', 'Unknown')} - no original data available for retry")
+                        continue
+
+                    # Save individual customer file
+                    with open(customer_filepath, 'w', encoding='utf-8') as f:
+                        json.dump(customer_data, f, indent=2, ensure_ascii=False)
+
+                self.logger.info(f"[INDIVIDUAL CUSTOMERS] Saved {len(customers)} {reason} customers to {reason_dir}")
+
+                # Create summary file for this failure reason
+                summary_filepath = os.path.join(reason_dir, f"_SUMMARY_{reason}.json")
+                summary_data = {
+                    "failure_reason": reason,
+                    "total_customers": len(customers),
+                    "timestamp": timestamp,
+                    "directory": reason_dir,
+                    "directory_structure": f"failed_customers/single_failures/{reason}",
+                    "customers_list": [
+                        {
+                            "customerId": c.get('customerId'),
+                            "username": c.get('username'),
+                            "error": c.get('error', 'No error message')[:100]  # Truncate long errors
+                        }
+                        for c in customers
+                    ]
+                }
+
+                with open(summary_filepath, 'w', encoding='utf-8') as f:
+                    json.dump(summary_data, f, indent=2, ensure_ascii=False)
+
+        except Exception as e:
+            self.logger.error(f"❌ Error saving individual failed customers by reason: {e}")
 
     def _save_failed_batch(self, batch: List[Dict[Any, Any]], batch_id: int):
         """Save entire batch that contains failed customers to batches_to_retry directory"""
@@ -1051,6 +1206,24 @@ class BulkCustomerImporter:
             self.logger.error(f"   Auth service failures: {auth_failures} batches")
         if api_failures > 0:
             self.logger.error(f"   API failures: {api_failures} batches")
+
+        # Show individual customer failure breakdown
+        if self.failed_customers:
+            conflict_count = len([c for c in self.failed_customers if c.get('result', '').upper() == 'CONFLICT'])
+            failed_count = len([c for c in self.failed_customers if c.get('result', '').upper() == 'FAILED'])
+            error_count = len([c for c in self.failed_customers if c.get('result', '').upper() == 'ERROR'])
+            unknown_count = len(self.failed_customers) - conflict_count - failed_count - error_count
+
+            self.logger.info("📋 INDIVIDUAL CUSTOMER FAILURES:")
+            if conflict_count > 0:
+                self.logger.info(f"   CONFLICT customers: {conflict_count}")
+            if failed_count > 0:
+                self.logger.info(f"   FAILED customers: {failed_count}")
+            if error_count > 0:
+                self.logger.info(f"   ERROR customers: {error_count}")
+            if unknown_count > 0:
+                self.logger.info(f"   UNKNOWN reason customers: {unknown_count}")
+            self.logger.info("   Individual customer files saved in failed_customers/single_failures/* directories")
 
         # Save failed batches for retry
         if self.failed_batches:
