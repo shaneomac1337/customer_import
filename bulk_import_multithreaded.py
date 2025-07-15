@@ -395,16 +395,25 @@ The structure helps organize failures by type for easier handling and retry.
                     # Try to match with original batch data
                     original_customer = None
                     for customer in batch_customers:
-                        # Match by card number
-                        if customer.get('customerCards') and len(customer['customerCards']) > 0:
-                            card_number = customer['customerCards'][0].get('cardNumber')
-                            if str(card_number) == str(customer_id):
+                        # Handle nested person structure
+                        person_data = customer.get('person', customer)
+
+                        # Match by customer ID directly
+                        if person_data.get('customerId') == str(customer_id):
+                            original_customer = customer
+                            break
+
+                        # Match by card number (check both 'number' and 'cardNumber' fields)
+                        if person_data.get('customerCards') and len(person_data['customerCards']) > 0:
+                            card_data = person_data['customerCards'][0]
+                            card_number = card_data.get('number') or card_data.get('cardNumber')
+                            if card_number and str(card_number) == str(customer_id):
                                 original_customer = customer
                                 break
 
                         # Match by personal number in username
-                        if username and customer.get('personalNumber'):
-                            personal_num = customer['personalNumber'].replace('-', '')
+                        if username and person_data.get('personalNumber'):
+                            personal_num = person_data['personalNumber'].replace('-', '')
                             if personal_num in username.replace('-', ''):
                                 original_customer = customer
                                 break
@@ -429,12 +438,12 @@ The structure helps organize failures by type for easier handling and retry.
 
                 # Enhanced regex to extract failed customers from log files or single responses
                 import re
-                failed_pattern = r'"customerId":\s*"([^"]+)"[^}]*"username":\s*"([^"]+)"[^}]*"result":\s*"(?:FAILED|ERROR|CONFLICT)"'
+                failed_pattern = r'"customerId":\s*"([^"]+)"[^}]*"username":\s*"([^"]+)"[^}]*"result":\s*"(FAILED|ERROR|CONFLICT)"'
                 matches = re.findall(failed_pattern, response_text)
 
                 self.logger.info(f"[REGEX] Found {len(matches)} failed customer matches in response text")
 
-                for customer_id, username in matches:
+                for customer_id, username, result_type in matches:
                     # Check if we already found this customer via structured parsing
                     already_found = any(fc['customerId'] == customer_id for fc in failed_customers)
                     if not already_found:
@@ -443,16 +452,33 @@ The structure helps organize failures by type for easier handling and retry.
                         # Try to match with original batch data
                         original_customer = None
                         for customer in batch_customers:
-                            if customer.get('customerCards') and len(customer['customerCards']) > 0:
-                                card_number = customer['customerCards'][0].get('cardNumber')
-                                if str(card_number) == str(customer_id):
+                            # Handle nested person structure
+                            person_data = customer.get('person', customer)
+
+                            # Match by customer ID directly
+                            if person_data.get('customerId') == str(customer_id):
+                                original_customer = customer
+                                break
+
+                            # Match by card number (check both 'number' and 'cardNumber' fields)
+                            if person_data.get('customerCards') and len(person_data['customerCards']) > 0:
+                                card_data = person_data['customerCards'][0]
+                                card_number = card_data.get('number') or card_data.get('cardNumber')
+                                if card_number and str(card_number) == str(customer_id):
+                                    original_customer = customer
+                                    break
+
+                            # Match by username pattern (firstName lastName-personalNumber)
+                            if username and person_data.get('firstName') and person_data.get('lastName'):
+                                expected_username_start = f"{person_data['firstName']} {person_data['lastName']}"
+                                if username.upper().startswith(expected_username_start.upper().replace(' ', ' ')):
                                     original_customer = customer
                                     break
 
                         failed_customer = {
                             'customerId': customer_id,
                             'username': username,
-                            'result': 'FAILED',  # Will be FAILED or ERROR from regex
+                            'result': result_type,  # Use the captured result type (FAILED, ERROR, or CONFLICT)
                             'error': 'Detected via regex fallback - no specific error message',
                             'timestamp': datetime.now().isoformat(),
                             'originalData': original_customer,

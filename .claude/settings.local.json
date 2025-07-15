@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(\".\\JsonSplitter_Portable\\JsonSplitter.exe\" single_customer_batch.json)"
+    ],
+    "deny": []
+  }
+}
