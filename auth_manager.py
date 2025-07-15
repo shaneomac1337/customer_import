@@ -81,7 +81,7 @@ class AuthenticationManager:
     def _refresh_token(self) -> None:
         """Refresh the authentication token"""
         try:
-            self.logger.info("🔄 Refreshing authentication token...")
+            self.logger.info("[AUTH] Refreshing authentication token...")
             
             headers = {
                 'Authorization': f'Basic {self.basic_auth}',
@@ -110,20 +110,20 @@ class AuthenticationManager:
                 # Calculate expiration time
                 self.token_expires_at = datetime.now() + timedelta(seconds=expires_in)
                 
-                self.logger.info(f"✅ Token refreshed successfully. Expires at: {self.token_expires_at}")
+                self.logger.info(f"[AUTH] Token refreshed successfully. Expires at: {self.token_expires_at}")
                 
             else:
                 error_msg = f"Token refresh failed: HTTP {response.status_code} - {response.text}"
-                self.logger.error(f"❌ {error_msg}")
+                self.logger.error(f"[AUTH ERROR] {error_msg}")
                 raise Exception(error_msg)
                 
         except requests.exceptions.RequestException as e:
             error_msg = f"Token refresh network error: {e}"
-            self.logger.error(f"❌ {error_msg}")
+            self.logger.error(f"[AUTH ERROR] {error_msg}")
             raise Exception(error_msg)
         except Exception as e:
             error_msg = f"Token refresh error: {e}"
-            self.logger.error(f"❌ {error_msg}")
+            self.logger.error(f"[AUTH ERROR] {error_msg}")
             raise Exception(error_msg)
     
     def get_auth_headers(self) -> Dict[str, str]:
@@ -210,10 +210,21 @@ class AuthenticationManager:
 
 # Example usage and testing
 if __name__ == "__main__":
-    # Setup logging
+    # Setup logging with UTF-8 encoding to handle emoji characters
+    file_handler = logging.FileHandler('auth_manager.log', encoding='utf-8')
+    file_handler.setLevel(logging.INFO)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+
+    # Set formatter for both handlers
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
+        handlers=[file_handler, console_handler]
     )
     
     # Test authentication manager (GK-Passport now hardcoded in constructor)

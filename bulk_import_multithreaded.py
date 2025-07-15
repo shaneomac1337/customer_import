@@ -86,6 +86,28 @@ class BulkCustomerImporter:
         self.processed_batches = 0
         self.remaining_batches = []
 
+        # Setup logging FIRST (before any methods that use self.logger)
+        # Configure handlers with UTF-8 encoding to handle emoji characters
+        file_handler = logging.FileHandler('bulk_import.log', encoding='utf-8')
+        file_handler.setLevel(logging.INFO)
+
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+
+        # Set formatter for both handlers
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
+
+        logging.basicConfig(
+            level=logging.INFO,
+            handlers=[file_handler, console_handler]
+        )
+        self.logger = logging.getLogger(__name__)
+
+        # Create single_failures directory structure proactively
+        self._ensure_single_failures_structure()
+
     def _ensure_single_failures_structure(self):
         """Create the single_failures directory structure proactively"""
         try:
@@ -147,20 +169,6 @@ The structure helps organize failures by type for easier handling and retry.
             self.logger.error(f"Could not create single_failures structure: {e}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
-        
-        # Setup logging
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler('bulk_import.log'),
-                logging.StreamHandler()
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
-
-        # Create single_failures directory structure proactively
-        self._ensure_single_failures_structure()
 
         # Progress tracking
         self.total_batches = 0
@@ -242,7 +250,7 @@ The structure helps organize failures by type for easier handling and retry.
                 error_msg = result.get('error', '').lower()
                 if any(code in error_msg for code in ['503', '502', '504', 'service unavailable', 'bad gateway', 'timeout']):
                     self.auth_service_down = True
-                    self.logger.error(f"🚨 AUTH SERVICE DOWN: {result.get('error')}")
+                    self.logger.error(f"[AUTH SERVICE DOWN] {result.get('error')}")
                     return {
                         'healthy': False,
                         'service_down': True,
@@ -259,7 +267,7 @@ The structure helps organize failures by type for easier handling and retry.
 
         except Exception as e:
             self.auth_service_down = True
-            self.logger.error(f"🚨 AUTH SERVICE CHECK FAILED: {e}")
+            self.logger.error(f"[AUTH SERVICE CHECK FAILED] {e}")
             return {
                 'healthy': False,
                 'service_down': True,
@@ -281,7 +289,7 @@ The structure helps organize failures by type for easier handling and retry.
     def stop_import(self):
         """Stop the import process gracefully"""
         self.should_stop = True
-        self.logger.info("🛑 STOP REQUESTED - Import will stop after current batches complete")
+        self.logger.info("[STOP] STOP REQUESTED - Import will stop after current batches complete")
 
     def pause_import(self):
         """Pause the import process"""
@@ -476,7 +484,7 @@ The structure helps organize failures by type for easier handling and retry.
                 self.logger.debug(f"[PARSE] No failed customers detected in this batch")
 
         except Exception as e:
-            self.logger.error(f"❌ Error parsing API response for failures: {e}")
+            self.logger.error(f"[ERROR] Error parsing API response for failures: {e}")
             self.logger.error(f"Response data type: {type(response_data)}")
             if hasattr(response_data, '__len__'):
                 self.logger.error(f"Response data length: {len(response_data)}")
@@ -590,7 +598,7 @@ The structure helps organize failures by type for easier handling and retry.
                     json.dump(summary_data, f, indent=2, ensure_ascii=False)
 
         except Exception as e:
-            self.logger.error(f"❌ Error saving individual failed customers by reason: {e}")
+            self.logger.error(f"[ERROR] Error saving individual failed customers by reason: {e}")
 
     def _save_failed_batch(self, batch: List[Dict[Any, Any]], batch_id: int):
         """Save entire batch that contains failed customers to batches_to_retry directory"""
@@ -613,9 +621,9 @@ The structure helps organize failures by type for easier handling and retry.
             try:
                 with open(batch_filepath, 'w', encoding='utf-8') as f:
                     json.dump(batch_data, f, indent=2, ensure_ascii=False)
-                self.logger.info(f"💾 Saved failed batch {batch_id} to {batch_filepath} ({len(batch)} customers)")
+                self.logger.info(f"[SAVE] Saved failed batch {batch_id} to {batch_filepath} ({len(batch)} customers)")
             except Exception as e:
-                self.logger.error(f"❌ Error saving failed batch {batch_id}: {e}")
+                self.logger.error(f"[ERROR] Error saving failed batch {batch_id}: {e}")
 
     def _save_response_nok_batch(self, batch: List[Dict[Any, Any]], batch_id: int, status_code: int, response_text: str):
         """Save batch that failed with non-200 HTTP response to response_nok directory"""
@@ -647,7 +655,7 @@ The structure helps organize failures by type for easier handling and retry.
                     json.dump(batch_data, f, indent=2, ensure_ascii=False)
                 self.logger.info(f"[RESPONSE_NOK] Saved non-200 batch {batch_id} (HTTP {status_code}) to {batch_filepath}")
             except Exception as e:
-                self.logger.error(f"❌ Error saving response_nok batch {batch_id}: {e}")
+                self.logger.error(f"[ERROR] Error saving response_nok batch {batch_id}: {e}")
 
     def _save_auth_service_failure_batch(self, batch: List[Dict[Any, Any]], batch_id: int, error_message: str):
         """Save batch that failed due to auth service being down to auth_service_down directory"""
@@ -680,7 +688,7 @@ The structure helps organize failures by type for easier handling and retry.
                     json.dump(batch_data, f, indent=2, ensure_ascii=False)
                 self.logger.error(f"[AUTH_SERVICE_DOWN] Saved batch {batch_id} to {batch_filepath}")
             except Exception as e:
-                self.logger.error(f"❌ Error saving auth service failure batch {batch_id}: {e}")
+                self.logger.error(f"[ERROR] Error saving auth service failure batch {batch_id}: {e}")
 
     def save_remaining_work(self, reason: str = "stopped"):
         """Save remaining work for resume functionality"""
@@ -710,11 +718,11 @@ The structure helps organize failures by type for easier handling and retry.
             with open(resume_filepath, 'w', encoding='utf-8') as f:
                 json.dump(resume_data, f, indent=2, ensure_ascii=False)
 
-            self.logger.info(f"💾 SAVED REMAINING WORK: {len(self.remaining_batches)} batches saved to {resume_filepath}")
+            self.logger.info(f"[SAVE] SAVED REMAINING WORK: {len(self.remaining_batches)} batches saved to {resume_filepath}")
             return resume_filepath
 
         except Exception as e:
-            self.logger.error(f"❌ Error saving remaining work: {e}")
+            self.logger.error(f"[ERROR] Error saving remaining work: {e}")
             return None
 
     def get_failed_customers_summary(self):
@@ -763,7 +771,7 @@ The structure helps organize failures by type for easier handling and retry.
         if self.should_check_auth_service():
             health_check = self.check_auth_service_health()
             if not health_check['healthy'] and health_check.get('service_down'):
-                self.logger.error(f"🚨 AUTH SERVICE DOWN - Aborting batch {batch_id}")
+                self.logger.error(f"[AUTH SERVICE DOWN] Aborting batch {batch_id}")
                 # Save this as an auth service failure
                 self._save_auth_service_failure_batch(batch, batch_id, health_check['error'])
                 return {
@@ -778,7 +786,7 @@ The structure helps organize failures by type for easier handling and retry.
             try:
                 headers = self.auth_manager.get_auth_headers()
             except Exception as e:
-                self.logger.error(f"❌ Authentication failed for batch {batch_id}: {e}")
+                self.logger.error(f"[ERROR] Authentication failed for batch {batch_id}: {e}")
 
                 # Check if this is an auth service down error
                 error_msg = str(e).lower()
@@ -852,7 +860,7 @@ The structure helps organize failures by type for easier handling and retry.
                     else:
                         self.logger.info(f"[SUCCESS] Batch {batch_id} - No failed customers detected")
 
-                    self.logger.info(f"✅ Batch {batch_id} completed successfully - {self.completed_batches}/{self.total_batches}")
+                    self.logger.info(f"[SUCCESS] Batch {batch_id} completed successfully - {self.completed_batches}/{self.total_batches}")
 
                     # Save full API response to file and get summary
                     response_summary = self._save_api_response_to_file(
@@ -951,7 +959,7 @@ The structure helps organize failures by type for easier handling and retry.
                         
             # Timeout exception handling removed - API handles its own timeouts
             except Exception as e:
-                self.logger.error(f"❌ Batch {batch_id} error (attempt {attempt + 1}): {e}")
+                self.logger.error(f"[ERROR] Batch {batch_id} error (attempt {attempt + 1}): {e}")
                 if attempt == self.max_retries - 1:
                     with self.lock:
                         self.failed_batches.append({
@@ -980,7 +988,7 @@ The structure helps organize failures by type for easier handling and retry.
         try:
             # Check if we should stop before processing
             if self.should_stop:
-                self.logger.info(f"🛑 STOPPING - Batch {batch_id} not processed due to stop request")
+                self.logger.info(f"[STOP] STOPPING - Batch {batch_id} not processed due to stop request")
                 return {
                     'batch_id': batch_id,
                     'status': 'stopped',
@@ -989,12 +997,12 @@ The structure helps organize failures by type for easier handling and retry.
 
             # Wait if paused
             if self.is_paused:
-                self.logger.info(f"⏸️ PAUSED - Batch {batch_id} waiting for resume...")
+                self.logger.info(f"[PAUSE] PAUSED - Batch {batch_id} waiting for resume...")
                 self.pause_event.wait()  # Block until resumed
 
                 # Check if stop was requested while paused
                 if self.should_stop:
-                    self.logger.info(f"🛑 STOPPING - Batch {batch_id} not processed (stopped while paused)")
+                    self.logger.info(f"[STOP] STOPPING - Batch {batch_id} not processed (stopped while paused)")
                     return {
                         'batch_id': batch_id,
                         'status': 'stopped',
@@ -1043,7 +1051,7 @@ The structure helps organize failures by type for easier handling and retry.
         """Import customers from multiple files using multithreading - TRUE LAZY LOADING"""
 
         start_time = datetime.now()
-        self.logger.info(f"🚀 Starting bulk import from {len(file_paths)} files")
+        self.logger.info(f"[IMPORT] Starting bulk import from {len(file_paths)} files")
 
         # Create lazy batch references without loading any data
         lazy_batches = []
@@ -1086,11 +1094,11 @@ The structure helps organize failures by type for easier handling and retry.
 
         self.total_batches = len(lazy_batches)
         self.remaining_batches = lazy_batches.copy()  # Track remaining work
-        self.logger.info(f"📊 Total customers to import: {total_customers}")
-        self.logger.info(f"📦 Planned {len(lazy_batches)} batches (lazy loading - files will be loaded during processing)")
-        
-        self.logger.info(f"📦 Created {self.total_batches} batches of {self.batch_size} customers each")
-        self.logger.info(f"🔧 Using {self.max_workers} worker threads")
+        self.logger.info(f"[STATS] Total customers to import: {total_customers}")
+        self.logger.info(f"[STATS] Planned {len(lazy_batches)} batches (lazy loading - files will be loaded during processing)")
+
+        self.logger.info(f"[STATS] Created {self.total_batches} batches of {self.batch_size} customers each")
+        self.logger.info(f"[STATS] Using {self.max_workers} worker threads")
         
         # Process lazy batches with thread pool
         results = []
@@ -1112,7 +1120,7 @@ The structure helps organize failures by type for easier handling and retry.
                     # Track stopped batches for resume functionality
                     if result.get('status') == 'stopped':
                         stopped_batches.append(batch_id)
-                        self.logger.info(f"🛑 Batch {batch_id} stopped - can be resumed later")
+                        self.logger.info(f"[STOP] Batch {batch_id} stopped - can be resumed later")
                     else:
                         # Remove from remaining batches (completed or failed)
                         self.remaining_batches = [b for b in self.remaining_batches if lazy_batches[batch_id-1] != b]
@@ -1120,10 +1128,10 @@ The structure helps organize failures by type for easier handling and retry.
                     # Log memory-efficient completion
                     status = result.get('status', 'unknown')
                     customers_count = result.get('customers_count', 0)
-                    self.logger.debug(f"✅ Batch {batch_id} completed ({status}) - {customers_count} customers processed and freed from memory")
+                    self.logger.debug(f"[COMPLETE] Batch {batch_id} completed ({status}) - {customers_count} customers processed and freed from memory")
 
                 except Exception as e:
-                    self.logger.error(f"❌ Batch {batch_id} failed with exception: {e}")
+                    self.logger.error(f"[ERROR] Batch {batch_id} failed with exception: {e}")
                     results.append({
                         'batch_id': batch_id,
                         'status': 'failed',
@@ -1136,11 +1144,11 @@ The structure helps organize failures by type for easier handling and retry.
                     # Trigger garbage collection every 10 batches to free memory
                     if batch_id % 10 == 0:
                         gc.collect()
-                        self.logger.debug(f"🧹 Memory cleanup triggered after batch {batch_id}")
+                        self.logger.debug(f"[CLEANUP] Memory cleanup triggered after batch {batch_id}")
 
                     # Check if we should auto-pause due to auth service issues
                     if self.auth_service_down and not self.is_paused and not self.should_stop:
-                        self.logger.error("🚨 AUTO-PAUSING due to auth service being down")
+                        self.logger.error("[ALERT] AUTO-PAUSING due to auth service being down")
                         self.pause_import()
         
         # Calculate final statistics
@@ -1168,7 +1176,7 @@ The structure helps organize failures by type for easier handling and retry.
             'success_rate': f"{(successful_batches/self.total_batches)*100:.1f}%"
         }
         
-        self.logger.info("📊 IMPORT SUMMARY:")
+        self.logger.info("[SUMMARY] IMPORT SUMMARY:")
         self.logger.info(f"   Total customers: {total_customers}")
         self.logger.info(f"   Successful: {successful_customers}")
         self.logger.info(f"   Failed: {failed_batches * self.batch_size}")
@@ -1181,23 +1189,23 @@ The structure helps organize failures by type for easier handling and retry.
         if stopped_batches > 0 or self.should_stop:
             if self.should_stop:
                 reason = "user_stop"
-                self.logger.info("🛑 IMPORT STOPPED by user request")
+                self.logger.info("[STOP] IMPORT STOPPED by user request")
             elif self.auth_service_down:
                 reason = "auth_service_down"
-                self.logger.info("🛑 IMPORT STOPPED due to auth service issues")
+                self.logger.info("[STOP] IMPORT STOPPED due to auth service issues")
             else:
                 reason = "unknown"
-                self.logger.info("🛑 IMPORT STOPPED for unknown reason")
+                self.logger.info("[STOP] IMPORT STOPPED for unknown reason")
 
             # Save remaining work for resume
             resume_file = self.save_remaining_work(reason)
             if resume_file:
-                self.logger.info(f"💾 Remaining work saved to: {resume_file}")
+                self.logger.info(f"[SAVE] Remaining work saved to: {resume_file}")
                 self.logger.info("   Use this file to resume the import later")
 
         # Check for auth service issues
         if self.auth_service_down:
-            self.logger.error("🚨 AUTH SERVICE WAS DOWN during import!")
+            self.logger.error("[AUTH SERVICE DOWN] AUTH SERVICE WAS DOWN during import!")
             self.logger.error("   Some failures may be due to auth service issues")
             self.logger.error("   Check auth_service_down_* directories for affected batches")
 
@@ -1217,7 +1225,7 @@ The structure helps organize failures by type for easier handling and retry.
             error_count = len([c for c in self.failed_customers if c.get('result', '').upper() == 'ERROR'])
             unknown_count = len(self.failed_customers) - conflict_count - failed_count - error_count
 
-            self.logger.info("📋 INDIVIDUAL CUSTOMER FAILURES:")
+            self.logger.info("[FAILURES] INDIVIDUAL CUSTOMER FAILURES:")
             if conflict_count > 0:
                 self.logger.info(f"   CONFLICT customers: {conflict_count}")
             if failed_count > 0:
@@ -1329,10 +1337,10 @@ All retry files are formatted correctly for immediate import!
         with open(instructions_file, 'w', encoding='utf-8') as f:
             f.write(instructions_content)
 
-        self.logger.info(f"[RETRY] ✅ Created {len(retry_files)} retry files in {retry_dir}")
-        self.logger.info(f"[RETRY] 📋 Summary saved to: {summary_file}")
-        self.logger.info(f"[RETRY] 📖 Instructions saved to: {instructions_file}")
-        self.logger.info(f"[RETRY] 🔄 Ready for immediate re-import!")
+        self.logger.info(f"[RETRY] Created {len(retry_files)} retry files in {retry_dir}")
+        self.logger.info(f"[RETRY] Summary saved to: {summary_file}")
+        self.logger.info(f"[RETRY] Instructions saved to: {instructions_file}")
+        self.logger.info(f"[RETRY] Ready for immediate re-import!")
 
         # Notify GUI about retry files creation
         if hasattr(self, 'progress_callback') and self.progress_callback:
