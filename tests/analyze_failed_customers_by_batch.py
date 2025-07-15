@@ -74,8 +74,8 @@ def create_batch_retry_files(batches, batch_info, output_dir="batch_retry_files"
             }
             file_suffix = "failed_only"
         
-        # Create filename
-        batch_num = str(batch_id).zfill(2)
+        # Create filename (5 digits for 50K+ files)
+        batch_num = f"{batch_id:05d}"
         retry_filename = f"retry_batch_{batch_num}_{file_suffix}.json"
         retry_filepath = os.path.join(full_output_dir, retry_filename)
         

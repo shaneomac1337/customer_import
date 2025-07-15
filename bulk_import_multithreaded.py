@@ -1283,7 +1283,7 @@ The structure helps organize failures by type for easier handling and retry.
                     'customer_count': len(batch['customers']),
                     'error': batch.get('error', 'Unknown error'),
                     'status_code': batch.get('status_code'),
-                    'retry_file': f"retry_batch_{i:02d}_failed.json"
+                    'retry_file': f"retry_batch_{i:05d}_failed.json"
                 }
                 for i, batch in enumerate(self.failed_batches, 1)
             ]
