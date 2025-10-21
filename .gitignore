@@ -17,6 +17,11 @@ customer_data/
 bulk_import_700_customers/
 bulk_import_1000_customers/
 bulk_import_batches/
+bulk_import_*_batches/
+
+# Output directory (generated data)
+output/
+!output/README.md
 
 # Log files (may contain sensitive information)
 *.log
@@ -101,7 +106,10 @@ poetry.lock
 test_*.json
 *_test.json
 test_output/
+
+# Temporary files directory
 temp/
+!temp/README.md
 tmp/
 
 # Coverage reports

@@ -1,0 +1,30 @@
+{
+  "data": [
+    {
+      "changeType": "CREATE",
+      "type": "PERSON",
+      "person": {
+        "customerId": "968759599110",
+        "username": "ebylund",
+        "statisticalUseAllowed": true,
+        "declarationAvailable": true,
+        "status": "ACTIVE",
+        "firstName": "Elina",
+        "lastName": "Bylund",
+        "birthday": "1986-09-10T00:00:00",
+        "customerCards": [
+          {
+            "number": "9000578",
+            "type": "MAIN_CARD",
+            "scope": "GLOBAL"
+          },
+          {
+            "number": "194111286979",
+            "type": "PARTNER_CARD",
+            "scope": "GLOBAL"
+          }
+        ]
+      }
+    }
+  ]
+}

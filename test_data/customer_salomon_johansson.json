@@ -1,0 +1,30 @@
+{
+  "data": [
+    {
+      "changeType": "CREATE",
+      "type": "PERSON",
+      "person": {
+        "customerId": "949555670820",
+        "username": "sjohansson",
+        "statisticalUseAllowed": true,
+        "declarationAvailable": true,
+        "status": "ACTIVE",
+        "firstName": "Salomon",
+        "lastName": "Johansson",
+        "birthday": "1990-12-06T00:00:00",
+        "customerCards": [
+          {
+            "number": "9000555",
+            "type": "MAIN_CARD",
+            "scope": "GLOBAL"
+          },
+          {
+            "number": "199012062395",
+            "type": "PARTNER_CARD",
+            "scope": "GLOBAL"
+          }
+        ]
+      }
+    }
+  ]
+}

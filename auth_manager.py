@@ -17,26 +17,44 @@ class AuthenticationManager:
     """Manages OAuth2 authentication with automatic token refresh"""
     
     def __init__(self,
-                 username: str = "coop_sweden",
-                 password: str = "coopsverige123",
+                 mode: str = "C4R",  # "C4R" or "Engage"
+                 username: str = None,
+                 password: str = None,
                  gk_passport: str = "1.1:CiMg46zV+88yKOOMxZPwMjIDMDAxOg5idXNpbmVzc1VuaXRJZBIKCAISBnVzZXJJZBoSCAIaCGNsaWVudElkIgR3c0lkIhoaGGI6Y3VzdC5jdXN0b21lci5pbXBvcnRlcg==",
-                 auth_url: str = "https://prod.cse.cloud4retail.co/auth-service/tenants/001/oauth/token",
-                 basic_auth: str = "bGF1bmNocGFkOk5iV295MWxES3Y4N1JBQXdOUHJF"):
+                 auth_url: str = None,
+                 basic_auth: str = "bGF1bmNocGFkOk5iV295MWxES3Y4N1JBQXdOUHJF",
+                 client_id: str = None):
         """
         Initialize the authentication manager
         
         Args:
+            mode: Authentication mode - "C4R" (Cloud4Retail) or "Engage"
             username: OAuth username
             password: OAuth password  
-            gk_passport: GK-Passport header value
-            auth_url: OAuth token endpoint URL
-            basic_auth: Base64 encoded basic auth credentials
+            gk_passport: GK-Passport header value (C4R only)
+            auth_url: OAuth token endpoint URL (optional, defaults based on mode)
+            basic_auth: Base64 encoded basic auth credentials (C4R only)
+            client_id: Client ID for Engage mode
         """
-        self.username = username
-        self.password = password
-        self.gk_passport = gk_passport
-        self.auth_url = auth_url
-        self.basic_auth = basic_auth
+        self.mode = mode.upper()
+        
+        # Set defaults based on mode
+        if self.mode == "C4R":
+            self.username = username or "coop_sweden"
+            self.password = password or "coopsverige123"
+            self.auth_url = auth_url or "https://prod.cse.cloud4retail.co/auth-service/tenants/001/oauth/token"
+            self.basic_auth = basic_auth
+            self.gk_passport = gk_passport
+            self.client_id = None
+        elif self.mode == "ENGAGE":
+            self.username = username or "CoopTechUser"
+            self.password = password or "Usygw&B#$n)3d_Sd"
+            self.auth_url = auth_url or "https://dev.cse.gk-engage.co/auth/realms/001-operators/protocol/openid-connect/token"
+            self.client_id = client_id or "employee-hub"
+            self.basic_auth = None
+            self.gk_passport = None  # Engage doesn't use GK-Passport
+        else:
+            raise ValueError(f"Invalid mode: {mode}. Must be 'C4R' or 'Engage'")
         
         # Token management
         self.current_token: Optional[str] = None
@@ -81,18 +99,29 @@ class AuthenticationManager:
     def _refresh_token(self) -> None:
         """Refresh the authentication token"""
         try:
-            self.logger.info("[AUTH] Refreshing authentication token...")
+            self.logger.info(f"[AUTH] Refreshing authentication token ({self.mode} mode)...")
             
-            headers = {
-                'Authorization': f'Basic {self.basic_auth}',
-                'Content-Type': 'application/x-www-form-urlencoded'
-            }
-            
-            data = {
-                'username': self.username,
-                'password': self.password,
-                'grant_type': 'password'
-            }
+            # Prepare headers and data based on mode
+            if self.mode == "C4R":
+                headers = {
+                    'Authorization': f'Basic {self.basic_auth}',
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                }
+                data = {
+                    'username': self.username,
+                    'password': self.password,
+                    'grant_type': 'password'
+                }
+            else:  # Engage mode
+                headers = {
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                }
+                data = {
+                    'username': self.username,
+                    'password': self.password,
+                    'grant_type': 'password',
+                    'client_id': self.client_id
+                }
             
             response = requests.post(
                 self.auth_url,
@@ -140,7 +169,8 @@ class AuthenticationManager:
             'Content-Type': 'application/json'
         }
         
-        if self.gk_passport:
+        # Only add GK-Passport for C4R mode
+        if self.mode == "C4R" and self.gk_passport:
             headers['GK-Passport'] = self.gk_passport
             
         return headers
@@ -227,23 +257,13 @@ if __name__ == "__main__":
         handlers=[file_handler, console_handler]
     )
     
-    # Test authentication manager (GK-Passport now hardcoded in constructor)
-    auth_manager = AuthenticationManager()
+    # Test authentication manager
+    print("Testing C4R mode:")
+    auth_manager_c4r = AuthenticationManager(mode="C4R")
+    result = auth_manager_c4r.test_authentication()
+    print(f"C4R test: {result}")
     
-    print("Testing Authentication Manager...")
-    print("=" * 50)
-    
-    # Test authentication
-    result = auth_manager.test_authentication()
-    print(f"Authentication test: {result}")
-    
-    # Get token info
-    info = auth_manager.get_token_info()
-    print(f"Token info: {info}")
-    
-    # Test getting headers
-    try:
-        headers = auth_manager.get_auth_headers()
-        print(f"Auth headers: {headers}")
-    except Exception as e:
-        print(f"Error getting headers: {e}")
+    print("\nTesting Engage mode:")
+    auth_manager_engage = AuthenticationManager(mode="Engage")
+    result = auth_manager_engage.test_authentication()
+    print(f"Engage test: {result}")

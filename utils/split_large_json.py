@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Split a large JSON file with customers into smaller batches of 100 customers each
+Split a large JSON file with customers into individual customer files (1 customer per JSON)
 """
 
 import json
@@ -9,20 +9,20 @@ import math
 import sys
 from datetime import datetime
 
-def split_json_file(input_file, batch_size=100, output_dir="split_batches"):
+def split_json_file(input_file, batch_size=1, output_dir="split_customers"):
     """
-    Split a large JSON file into smaller batch files
-    
+    Split a large JSON file into individual customer files
+
     Args:
         input_file (str): Path to the input JSON file
-        batch_size (int): Number of customers per batch (default: 100)
-        output_dir (str): Directory to save batch files
+        batch_size (int): Number of customers per file (default: 1)
+        output_dir (str): Directory to save customer files
     """
     
-    print(f"SPLITTING LARGE JSON FILE")
+    print(f"SPLITTING LARGE JSON FILE INTO INDIVIDUAL CUSTOMERS")
     print("=" * 50)
     print(f"Input file: {input_file}")
-    print(f"Batch size: {batch_size} customers")
+    print(f"Customers per file: {batch_size}")
     print(f"Output directory: {output_dir}")
     
     # Check if input file exists
@@ -59,9 +59,9 @@ def split_json_file(input_file, batch_size=100, output_dir="split_batches"):
             print(f"WARNING: No customers found in the file")
             return False
         
-        # Calculate number of batches needed
-        num_batches = math.ceil(total_customers / batch_size)
-        print(f"Will create {num_batches} batch files")
+        # Calculate number of files needed
+        num_files = math.ceil(total_customers / batch_size)
+        print(f"Will create {num_files} individual customer files")
         
         # Create output directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -69,39 +69,38 @@ def split_json_file(input_file, batch_size=100, output_dir="split_batches"):
         os.makedirs(full_output_dir, exist_ok=True)
         print(f"Created output directory: {full_output_dir}")
         
-        # Split into batches
-        batch_files = []
-        for batch_num in range(num_batches):
-            start_idx = batch_num * batch_size
+        # Split into individual customer files
+        customer_files = []
+        for customer_num in range(num_files):
+            start_idx = customer_num * batch_size
             end_idx = min(start_idx + batch_size, total_customers)
-            
-            batch_customers = customers[start_idx:end_idx]
-            actual_batch_size = len(batch_customers)
-            
-            # Create batch data structure
-            batch_data = {
-                "data": batch_customers
+
+            customer_data_list = customers[start_idx:end_idx]
+            actual_file_size = len(customer_data_list)
+
+            # Create customer data structure (single customer wrapped in data array)
+            customer_data = {
+                "data": customer_data_list
             }
-            
+
             # Generate filename (5 digits for 50K+ files)
-            batch_filename = f"batch_{batch_num + 1:05d}_customers_{actual_batch_size}.json"
-            batch_filepath = os.path.join(full_output_dir, batch_filename)
-            
-            # Save batch file
-            with open(batch_filepath, 'w', encoding='utf-8') as f:
-                json.dump(batch_data, f, indent=2, ensure_ascii=False)
-            
-            batch_files.append({
-                'filename': batch_filename,
-                'batch_number': batch_num + 1,
-                'customer_count': actual_batch_size,
-                'start_customer': start_idx + 1,
-                'end_customer': end_idx
+            customer_filename = f"customer_{customer_num + 1:05d}.json"
+            customer_filepath = os.path.join(full_output_dir, customer_filename)
+
+            # Save customer file
+            with open(customer_filepath, 'w', encoding='utf-8') as f:
+                json.dump(customer_data, f, indent=2, ensure_ascii=False)
+
+            customer_files.append({
+                'filename': customer_filename,
+                'file_number': customer_num + 1,
+                'customer_count': actual_file_size,
+                'customer_index': start_idx + 1
             })
-            
+
             # Progress update
-            progress = ((batch_num + 1) / num_batches) * 100
-            print(f"Created {batch_filename} ({actual_batch_size} customers) - {progress:.1f}% complete")
+            progress = ((customer_num + 1) / num_files) * 100
+            print(f"Created {customer_filename} (1 customer) - {progress:.1f}% complete")
         
         # Create summary file
         summary_file = os.path.join(full_output_dir, "split_summary.json")
@@ -110,20 +109,20 @@ def split_json_file(input_file, batch_size=100, output_dir="split_batches"):
             'input_file': input_file,
             'input_file_size_mb': round(file_size / (1024*1024), 2),
             'total_customers': total_customers,
-            'batch_size': batch_size,
-            'total_batches': num_batches,
+            'customers_per_file': batch_size,
+            'total_files': num_files,
             'output_directory': full_output_dir,
-            'batch_files': batch_files
+            'customer_files': customer_files
         }
-        
+
         with open(summary_file, 'w', encoding='utf-8') as f:
             json.dump(summary_data, f, indent=2, ensure_ascii=False)
-        
+
         print(f"\nSPLITTING COMPLETED SUCCESSFULLY!")
         print(f"Summary:")
         print(f"   - Total customers: {total_customers:,}")
-        print(f"   - Batch files created: {num_batches}")
-        print(f"   - Customers per batch: {batch_size}")
+        print(f"   - Customer files created: {num_files}")
+        print(f"   - Customers per file: {batch_size}")
         print(f"   - Output directory: {full_output_dir}")
         print(f"   - Summary file: split_summary.json")
         
@@ -142,10 +141,10 @@ def split_json_file(input_file, batch_size=100, output_dir="split_batches"):
 
 if __name__ == "__main__":
     # Configuration
-    BATCH_SIZE = 100
-    OUTPUT_DIR = "customer_batches"
-    
-    print("JSON BATCH SPLITTER")
+    BATCH_SIZE = 1
+    OUTPUT_DIR = "individual_customers"
+
+    print("JSON INDIVIDUAL CUSTOMER SPLITTER")
     print("=" * 50)
     
     # Check for command line arguments (drag and drop support)
@@ -174,7 +173,7 @@ if __name__ == "__main__":
     success = split_json_file(INPUT_FILE, BATCH_SIZE, OUTPUT_DIR)
     
     if success:
-        print(f"\nAll done! Your batch files are ready for import.")
+        print(f"\nAll done! Your individual customer files are ready for import.")
     else:
         print(f"\nSplitting failed. Please check the error messages above.")
     

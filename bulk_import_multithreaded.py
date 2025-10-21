@@ -13,7 +13,7 @@ from auth_manager import AuthenticationManager
 
 class BulkCustomerImporter:
     def __init__(self,
-                 api_url: str,
+                 api_url: str = None,
                  auth_token: str = None,
                  gk_passport: str = "1.1:CiMg46zV+88yKOOMxZPwMjIDMDAxOg5idXNpbmVzc1VuaXRJZBIKCAISBnVzZXJJZBoSCAIaCGNsaWVudElkIgR3c0lkIhoaGGI6Y3VzdC5jdXN0b21lci5pbXBvcnRlcg==",
                  batch_size: int = 70,
@@ -21,14 +21,29 @@ class BulkCustomerImporter:
                  delay_between_requests: float = 1.0,
                  max_retries: int = 3,
                  progress_callback=None,
-                 # New authentication parameters
-                 username: str = "coop_sweden",
-                 password: str = "coopsverige123",
+                 # Authentication mode
+                 mode: str = "C4R",  # "C4R" or "Engage"
+                 # Authentication parameters
+                 username: str = None,
+                 password: str = None,
                  use_auto_auth: bool = False,
+                 client_id: str = None,  # For Engage mode
                  # Failed customers tracking
                  failed_customers_file: str = "failed_customers.json"):
 
-        self.api_url = api_url
+        self.mode = mode.upper()
+        
+        # Set API URL default based on mode if not provided
+        if api_url is None:
+            if self.mode == "C4R":
+                self.api_url = "https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers"
+            elif self.mode == "ENGAGE":
+                self.api_url = "https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/customers"
+            else:
+                raise ValueError(f"Invalid mode: {mode}. Must be 'C4R' or 'Engage'")
+        else:
+            self.api_url = api_url
+            
         self.batch_size = batch_size
         self.max_workers = max_workers
         self.delay_between_requests = delay_between_requests
@@ -60,17 +75,19 @@ class BulkCustomerImporter:
         if use_auto_auth:
             # Use automatic authentication manager
             self.auth_manager = AuthenticationManager(
+                mode=self.mode,
                 username=username,
                 password=password,
-                gk_passport=gk_passport
+                gk_passport=gk_passport,
+                client_id=client_id
             )
             self.auth_token = None  # Will be managed automatically
-            self.gk_passport = gk_passport
+            self.gk_passport = gk_passport if self.mode == "C4R" else None
         else:
             # Use manual token (legacy mode)
             self.auth_manager = None
             self.auth_token = auth_token
-            self.gk_passport = gk_passport
+            self.gk_passport = gk_passport if self.mode == "C4R" else None
 
         # Authentication monitoring
         self.auth_failures = []

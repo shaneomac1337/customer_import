@@ -6,12 +6,12 @@
       "person": {
         "customerId": "50000000001",
         "status": "UNACTIVATED",
-        "firstName": "Mikael",
-        "lastName": "Håkansson",
+        "firstName": "Linda",
+        "lastName": "Andersson",
         "languageCode": "sv",
-        "birthday": "1964-03-19",
+        "birthday": "1977-12-22",
         "statisticalUseAllowed": false,
-        "marketingAllowedFlag": true,
+        "marketingAllowedFlag": false,
         "declarationAvailable": true
       }
     }

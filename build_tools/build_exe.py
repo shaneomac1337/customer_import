@@ -24,7 +24,8 @@ def check_dependencies():
     """Check if all required files exist"""
     required_files = [
         "bulk_import_gui.py",
-        "bulk_import_multithreaded.py"
+        "bulk_import_multithreaded.py",
+        "auth_manager.py"
     ]
     
     missing_files = []
@@ -52,6 +53,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('bulk_import_multithreaded.py', '.'),
+        ('auth_manager.py', '.'),
     ],
     hiddenimports=[
         'tkinter',

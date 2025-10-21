@@ -24,6 +24,7 @@ class BulkImportGUI:
         self.root.resizable(True, True)
         
         # Variables
+        self.mode = tk.StringVar(value="C4R")  # C4R or Engage
         self.api_url = tk.StringVar(value="https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers")
         self.auth_token = tk.StringVar()
         self.gk_passport = tk.StringVar(value="1.1:CiMg46zV+88yKOOMxZPwMjIDMDAxOg5idXNpbmVzc1VuaXRJZBIKCAISBnVzZXJJZBoSCAIaCGNsaWVudElkIgR3c0lkIhoaGGI6Y3VzdC5jdXN0b21lci5pbXBvcnRlcg==")
@@ -32,10 +33,11 @@ class BulkImportGUI:
         self.delay_between_requests = tk.DoubleVar(value=0.5)
         self.max_retries = tk.IntVar(value=3)
 
-        # New authentication variables
+        # Authentication variables
         self.use_auto_auth = tk.BooleanVar(value=False)
         self.username = tk.StringVar(value="coop_sweden")
         self.password = tk.StringVar(value="coopsverige123")
+        self.client_id = tk.StringVar(value="employee-hub")  # For Engage mode
         
         # File management
         self.selected_files = []
@@ -93,13 +95,23 @@ class BulkImportGUI:
     def create_config_tab(self, parent):
         """Create configuration tab"""
         
+        # Mode Selection
+        mode_group = ttk.LabelFrame(parent, text="Mode Selection", padding=10)
+        mode_group.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(mode_group, text="Platform Mode:").pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Radiobutton(mode_group, text="Cloud4Retail (C4R)", variable=self.mode,
+                       value="C4R", command=self.on_mode_change).pack(side=tk.LEFT, padx=(0, 20))
+        ttk.Radiobutton(mode_group, text="GK Cloud", variable=self.mode,
+                       value="Engage", command=self.on_mode_change).pack(side=tk.LEFT)
+        
         # API Configuration
         api_group = ttk.LabelFrame(parent, text="API Configuration", padding=10)
         api_group.pack(fill=tk.X, padx=10, pady=5)
         
         ttk.Label(api_group, text="API URL:").grid(row=0, column=0, sticky=tk.W, pady=2)
-        api_entry = ttk.Entry(api_group, textvariable=self.api_url, width=80)
-        api_entry.grid(row=0, column=1, columnspan=2, sticky=tk.EW, pady=2)
+        self.api_url_entry = ttk.Entry(api_group, textvariable=self.api_url, width=80)
+        self.api_url_entry.grid(row=0, column=1, columnspan=2, sticky=tk.EW, pady=2)
         
         # Authentication mode selection
         auth_mode_frame = ttk.Frame(api_group)
@@ -137,10 +149,21 @@ class BulkImportGUI:
         self.password_entry.grid(row=1, column=1, sticky=tk.W, pady=2, padx=(10, 5))
         ttk.Button(self.auto_auth_frame, text="Show", command=lambda: self.toggle_password(self.password_entry)).grid(row=1, column=2, padx=5)
 
-        ttk.Label(self.auto_auth_frame, text="GK-Passport:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        # C4R-specific fields
+        self.gk_passport_label = ttk.Label(self.auto_auth_frame, text="GK-Passport:")
+        self.gk_passport_label.grid(row=2, column=0, sticky=tk.W, pady=2)
         self.auto_passport_entry = ttk.Entry(self.auto_auth_frame, textvariable=self.gk_passport, width=60, show="*", state="readonly")
         self.auto_passport_entry.grid(row=2, column=1, sticky=tk.EW, pady=2, padx=(10, 5))
-        ttk.Label(self.auto_auth_frame, text="(Hardcoded)", foreground="gray").grid(row=2, column=2, padx=5)
+        self.gk_passport_note = ttk.Label(self.auto_auth_frame, text="(C4R only)", foreground="gray")
+        self.gk_passport_note.grid(row=2, column=2, padx=5)
+        
+        # Engage-specific fields
+        self.client_id_label = ttk.Label(self.auto_auth_frame, text="Client ID:")
+        self.client_id_label.grid(row=3, column=0, sticky=tk.W, pady=2)
+        self.client_id_entry = ttk.Entry(self.auto_auth_frame, textvariable=self.client_id, width=30)
+        self.client_id_entry.grid(row=3, column=1, sticky=tk.W, pady=2, padx=(10, 5))
+        self.client_id_note = ttk.Label(self.auto_auth_frame, text="(Engage only)", foreground="gray")
+        self.client_id_note.grid(row=3, column=2, padx=5)
 
         # Configure column weights for proper resizing
         self.manual_auth_frame.columnconfigure(1, weight=1)
@@ -149,8 +172,9 @@ class BulkImportGUI:
         # Test authentication button
         ttk.Button(api_group, text="Test Authentication", command=self.test_connection).grid(row=4, column=1, sticky=tk.E, pady=(10, 0))
 
-        # Initially set up the auth mode
+        # Initially set up the auth mode and platform mode
         self.toggle_auth_mode()
+        self.on_mode_change()  # Set up initial mode
         
         api_group.columnconfigure(1, weight=1)
         
@@ -309,6 +333,38 @@ class BulkImportGUI:
         else:
             entry_widget.config(show="*")
 
+    def on_mode_change(self):
+        """Handle platform mode change (C4R vs Engage)"""
+        mode = self.mode.get()
+        
+        # Update API URL based on mode
+        if mode == "C4R":
+            self.api_url.set("https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers")
+            self.username.set("coop_sweden")
+            self.password.set("coopsverige123")
+            # Show/hide mode-specific fields
+            self.gk_passport_label.grid()
+            self.auto_passport_entry.grid()
+            self.gk_passport_note.grid()
+            self.client_id_label.grid_remove()
+            self.client_id_entry.grid_remove()
+            self.client_id_note.grid_remove()
+        else:  # Engage
+            self.api_url.set("https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/customers")
+            self.username.set("CoopTechUser")
+            self.password.set("Usygw&B#$n)3d_Sd")
+            # Show/hide mode-specific fields
+            self.gk_passport_label.grid_remove()
+            self.auto_passport_entry.grid_remove()
+            self.gk_passport_note.grid_remove()
+            self.client_id_label.grid()
+            self.client_id_entry.grid()
+            self.client_id_note.grid()
+        
+        # Only log if log_text widget exists (after initialization)
+        if hasattr(self, 'log_text'):
+            self.log_message(f"Switched to {mode} mode")
+    
     def toggle_auth_mode(self):
         """Toggle between manual and automatic authentication modes"""
         if self.use_auto_auth.get():
@@ -693,10 +749,12 @@ class BulkImportGUI:
                     return
 
                 importer = BulkCustomerImporter(
+                    mode=self.mode.get(),
                     api_url=self.api_url.get(),
                     gk_passport=self.gk_passport.get(),
                     username=self.username.get(),
                     password=self.password.get(),
+                    client_id=self.client_id.get(),
                     use_auto_auth=True
                 )
             else:
@@ -706,6 +764,7 @@ class BulkImportGUI:
                     return
 
                 importer = BulkCustomerImporter(
+                    mode=self.mode.get(),
                     api_url=self.api_url.get(),
                     auth_token=self.auth_token.get(),
                     gk_passport=self.gk_passport.get(),
@@ -822,6 +881,7 @@ class BulkImportGUI:
 
             if self.use_auto_auth.get():
                 importer = BulkCustomerImporter(
+                    mode=self.mode.get(),
                     api_url=self.api_url.get(),
                     gk_passport=self.gk_passport.get(),
                     batch_size=self.batch_size.get(),
@@ -831,11 +891,13 @@ class BulkImportGUI:
                     progress_callback=self.handle_api_response,
                     username=self.username.get(),
                     password=self.password.get(),
+                    client_id=self.client_id.get(),
                     use_auto_auth=True,
                     failed_customers_file=failed_customers_file
                 )
             else:
                 importer = BulkCustomerImporter(
+                    mode=self.mode.get(),
                     api_url=self.api_url.get(),
                     auth_token=self.auth_token.get(),
                     gk_passport=self.gk_passport.get(),

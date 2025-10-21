@@ -31,15 +31,61 @@ python bulk_import_gui.py
 ```
 customer_import/
 ├── 📄 README.md                    # This file
-├── 🖥️ bulk_import_gui.py          # Main GUI application
-├── ⚙️ bulk_import_multithreaded.py # Core import engine
-├── 🔐 auth_manager.py              # Authentication management
 ├── 📋 requirements.txt             # Python dependencies
-├── 📁 tests/                       # Test scripts and utilities
-├── 📁 docu/                        # Documentation files
-├── 📁 failed_customers/            # Failed customer data
-├── 📁 bulk_import_*_batches/       # Sample customer data
+├── 🔧 WARP.md                      # Project configuration
+├── 🎮 Launch_Bulk_Import_GUI.bat   # Quick launch script
+├── 🎮 Load_1000_Customers_GUI.bat  # Launch with test data
+│
+├── 🖥️ Core Application Files
+│   ├── bulk_import_gui.py          # Main GUI application
+│   ├── bulk_import_multithreaded.py # Core import engine
+│   └── auth_manager.py              # Authentication management (C4R/Engage)
+│
+├── 📁 build_tools/                 # Build scripts & configurations
+│   ├── build_exe.py                # Build GUI executable
+│   ├── build_split_json_exe.py     # Build JSON splitter
+│   ├── Build_EXE.bat               # Build launcher
+│   ├── bulk_import.spec            # PyInstaller spec (GUI)
+│   └── split_json.spec             # PyInstaller spec (Splitter)
+│
+├── 📁 generators/                  # Customer data generators
+│   ├── generate_one_customer.py    # Single customer generator
+│   ├── generate_1000_customers.py  # 1K customers (20 batches)
+│   ├── generate_50_batches.py      # 5K customers (50 batches)
+│   └── generate_100_batches.py     # 10K customers (100 batches)
+│
+├── 📁 utils/                       # Utility scripts
+│   ├── split_json_simple.py        # Simple JSON splitter
+│   ├── split_large_json.py         # Large file splitter
+│   ├── verify_split_integrity.py   # Verify split files
+│   ├── check_firstname_spaces.py   # Name validation
+│   ├── quick_firstname_check.py    # Quick name check
+│   └── shx_csv_to_import.py        # CSV converter
+│
+├── 📁 tests/                       # Test scripts
+│   ├── test_dual_mode.py           # Test C4R/Engage modes
+│   ├── test_failed_customers_tab.py # Test failed customers UI
+│   └── analyze_failed_customers_by_batch.py # Failure analysis
+│
+├── 📁 test_data/                   # Sample data files
+│   ├── customer_*.json             # Sample customers
+│   └── *.csv                       # CSV test data
+│
+├── 📁 output/                      # Generated data & results
+│   ├── bulk_import_*_batches/      # Generated customer batches
+│   ├── failed_customers/           # Failed customer tracking
+│   └── retry_batches_*/            # Retry files
+│
+├── 📁 temp/                        # Temporary files
+│   ├── build/                      # Build artifacts
+│   ├── dist/                       # Distribution files
+│   └── *.log                       # Old log files
+│
+├── 📁 docu/                        # Documentation
+│   └── *.md                        # Guides & documentation
+│
 └── 📁 BulkCustomerImport_Portable/ # Standalone executable
+    └── BulkCustomerImport.exe      # Ready-to-run application
 ```
 
 ## 🛠️ **Installation**
