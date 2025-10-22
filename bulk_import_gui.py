@@ -26,6 +26,7 @@ class BulkImportGUI:
         # Variables
         self.mode = tk.StringVar(value="C4R")  # C4R or Engage
         self.api_url = tk.StringVar(value="https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers")
+        self.auth_url = tk.StringVar(value="https://prod.cse.cloud4retail.co/auth-service/tenants/001/oauth/token")
         self.auth_token = tk.StringVar()
         self.gk_passport = tk.StringVar(value="1.1:CiMg46zV+88yKOOMxZPwMjIDMDAxOg5idXNpbmVzc1VuaXRJZBIKCAISBnVzZXJJZBoSCAIaCGNsaWVudElkIgR3c0lkIhoaGGI6Y3VzdC5jdXN0b21lci5pbXBvcnRlcg==")
         self.batch_size = tk.IntVar(value=70)
@@ -113,9 +114,13 @@ class BulkImportGUI:
         self.api_url_entry = ttk.Entry(api_group, textvariable=self.api_url, width=80)
         self.api_url_entry.grid(row=0, column=1, columnspan=2, sticky=tk.EW, pady=2)
         
+        ttk.Label(api_group, text="Auth URL:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.auth_url_entry = ttk.Entry(api_group, textvariable=self.auth_url, width=80)
+        self.auth_url_entry.grid(row=1, column=1, columnspan=2, sticky=tk.EW, pady=2)
+        
         # Authentication mode selection
         auth_mode_frame = ttk.Frame(api_group)
-        auth_mode_frame.grid(row=1, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=5)
+        auth_mode_frame.grid(row=2, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=5)
 
         ttk.Label(auth_mode_frame, text="Authentication Mode:").pack(side=tk.LEFT, padx=(0, 10))
         ttk.Radiobutton(auth_mode_frame, text="Manual Token", variable=self.use_auto_auth,
@@ -125,7 +130,7 @@ class BulkImportGUI:
 
         # Manual authentication fields
         self.manual_auth_frame = ttk.Frame(api_group)
-        self.manual_auth_frame.grid(row=2, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=5)
+        self.manual_auth_frame.grid(row=3, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=5)
 
         ttk.Label(self.manual_auth_frame, text="Auth Token:").grid(row=0, column=0, sticky=tk.W, pady=2)
         self.auth_entry = ttk.Entry(self.manual_auth_frame, textvariable=self.auth_token, width=60, show="*")
@@ -139,7 +144,7 @@ class BulkImportGUI:
 
         # Automatic authentication fields
         self.auto_auth_frame = ttk.Frame(api_group)
-        self.auto_auth_frame.grid(row=3, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=5)
+        self.auto_auth_frame.grid(row=4, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=5)
 
         ttk.Label(self.auto_auth_frame, text="Username:").grid(row=0, column=0, sticky=tk.W, pady=2)
         ttk.Entry(self.auto_auth_frame, textvariable=self.username, width=30).grid(row=0, column=1, sticky=tk.W, pady=2, padx=(10, 0))
@@ -170,7 +175,7 @@ class BulkImportGUI:
         self.auto_auth_frame.columnconfigure(1, weight=1)
 
         # Test authentication button
-        ttk.Button(api_group, text="Test Authentication", command=self.test_connection).grid(row=4, column=1, sticky=tk.E, pady=(10, 0))
+        ttk.Button(api_group, text="Test Authentication", command=self.test_connection).grid(row=5, column=1, sticky=tk.E, pady=(10, 0))
 
         # Initially set up the auth mode and platform mode
         self.toggle_auth_mode()
@@ -337,9 +342,10 @@ class BulkImportGUI:
         """Handle platform mode change (C4R vs Engage)"""
         mode = self.mode.get()
         
-        # Update API URL based on mode
+        # Update API URL and Auth URL based on mode
         if mode == "C4R":
             self.api_url.set("https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers")
+            self.auth_url.set("https://prod.cse.cloud4retail.co/auth-service/tenants/001/oauth/token")
             self.username.set("coop_sweden")
             self.password.set("coopsverige123")
             # Show/hide mode-specific fields
@@ -351,6 +357,7 @@ class BulkImportGUI:
             self.client_id_note.grid_remove()
         else:  # Engage
             self.api_url.set("https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/customers")
+            self.auth_url.set("https://dev.cse.gk-engage.co/auth/realms/001-operators/protocol/openid-connect/token")
             self.username.set("CoopTechUser")
             self.password.set("Usygw&B#$n)3d_Sd")
             # Show/hide mode-specific fields
@@ -751,6 +758,7 @@ class BulkImportGUI:
                 importer = BulkCustomerImporter(
                     mode=self.mode.get(),
                     api_url=self.api_url.get(),
+                    auth_url=self.auth_url.get(),
                     gk_passport=self.gk_passport.get(),
                     username=self.username.get(),
                     password=self.password.get(),
@@ -883,6 +891,7 @@ class BulkImportGUI:
                 importer = BulkCustomerImporter(
                     mode=self.mode.get(),
                     api_url=self.api_url.get(),
+                    auth_url=self.auth_url.get(),
                     gk_passport=self.gk_passport.get(),
                     batch_size=self.batch_size.get(),
                     max_workers=self.max_workers.get(),

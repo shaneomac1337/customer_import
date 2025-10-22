@@ -14,6 +14,7 @@ from auth_manager import AuthenticationManager
 class BulkCustomerImporter:
     def __init__(self,
                  api_url: str = None,
+                 auth_url: str = None,  # Configurable auth URL
                  auth_token: str = None,
                  gk_passport: str = "1.1:CiMg46zV+88yKOOMxZPwMjIDMDAxOg5idXNpbmVzc1VuaXRJZBIKCAISBnVzZXJJZBoSCAIaCGNsaWVudElkIgR3c0lkIhoaGGI6Y3VzdC5jdXN0b21lci5pbXBvcnRlcg==",
                  batch_size: int = 70,
@@ -79,6 +80,7 @@ class BulkCustomerImporter:
                 username=username,
                 password=password,
                 gk_passport=gk_passport,
+                auth_url=auth_url,  # Pass configurable auth URL
                 client_id=client_id
             )
             self.auth_token = None  # Will be managed automatically
