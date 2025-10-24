@@ -25,14 +25,15 @@ class BulkImportGUI:
         
         # Variables
         self.mode = tk.StringVar(value="C4R")  # C4R or Engage
+        self.import_type = tk.StringVar(value="customers")  # customers or households
         self.api_url = tk.StringVar(value="https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers")
         self.auth_url = tk.StringVar(value="https://prod.cse.cloud4retail.co/auth-service/tenants/001/oauth/token")
         self.auth_token = tk.StringVar()
         self.gk_passport = tk.StringVar(value="1.1:CiMg46zV+88yKOOMxZPwMjIDMDAxOg5idXNpbmVzc1VuaXRJZBIKCAISBnVzZXJJZBoSCAIaCGNsaWVudElkIgR3c0lkIhoaGGI6Y3VzdC5jdXN0b21lci5pbXBvcnRlcg==")
-        self.batch_size = tk.IntVar(value=70)
-        self.max_workers = tk.IntVar(value=3)
-        self.delay_between_requests = tk.DoubleVar(value=0.5)
-        self.max_retries = tk.IntVar(value=3)
+        self.batch_size = tk.IntVar(value=100)
+        self.max_workers = tk.IntVar(value=10)
+        self.delay_between_requests = tk.DoubleVar(value=1.0)
+        self.max_retries = tk.IntVar(value=1)
 
         # Authentication variables
         self.use_auto_auth = tk.BooleanVar(value=False)
@@ -88,10 +89,12 @@ class BulkImportGUI:
         notebook.add(api_responses_frame, text="API Responses")
         self.create_api_responses_tab(api_responses_frame)
 
-        # Failed Customers Tab
-        failed_customers_frame = ttk.Frame(notebook)
-        notebook.add(failed_customers_frame, text="Failed Customers")
-        self.create_failed_customers_tab(failed_customers_frame)
+        # Failed Items Tab (dynamic based on import type)
+        failed_items_frame = ttk.Frame(notebook)
+        notebook.add(failed_items_frame, text="Failed Customers")
+        self.failed_items_frame = failed_items_frame
+        self.notebook = notebook  # Store notebook reference
+        self.create_failed_customers_tab(failed_items_frame)
     
     def create_config_tab(self, parent):
         """Create configuration tab"""
@@ -100,11 +103,23 @@ class BulkImportGUI:
         mode_group = ttk.LabelFrame(parent, text="Mode Selection", padding=10)
         mode_group.pack(fill=tk.X, padx=10, pady=5)
         
-        ttk.Label(mode_group, text="Platform Mode:").pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Radiobutton(mode_group, text="Cloud4Retail (C4R)", variable=self.mode,
+        # Platform mode
+        platform_frame = ttk.Frame(mode_group)
+        platform_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(platform_frame, text="Platform Mode:").pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Radiobutton(platform_frame, text="Cloud4Retail (C4R)", variable=self.mode,
                        value="C4R", command=self.on_mode_change).pack(side=tk.LEFT, padx=(0, 20))
-        ttk.Radiobutton(mode_group, text="GK Cloud", variable=self.mode,
+        ttk.Radiobutton(platform_frame, text="GK Cloud", variable=self.mode,
                        value="Engage", command=self.on_mode_change).pack(side=tk.LEFT)
+        
+        # Import type
+        import_type_frame = ttk.Frame(mode_group)
+        import_type_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(import_type_frame, text="Import Type:").pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Radiobutton(import_type_frame, text="Customers", variable=self.import_type,
+                       value="customers", command=self.on_import_type_change).pack(side=tk.LEFT, padx=(0, 20))
+        ttk.Radiobutton(import_type_frame, text="Households", variable=self.import_type,
+                       value="households", command=self.on_import_type_change).pack(side=tk.LEFT)
         
         # API Configuration
         api_group = ttk.LabelFrame(parent, text="API Configuration", padding=10)
@@ -231,12 +246,20 @@ class BulkImportGUI:
         list_frame.pack(fill=tk.BOTH, expand=True)
         
         # Treeview for file list
-        columns = ("File", "Customers", "Size", "Status")
+        columns = ("File", "Type", "Customers", "Size", "Status")
         self.file_tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=15)
         
-        for col in columns:
-            self.file_tree.heading(col, text=col)
-            self.file_tree.column(col, width=150)
+        # Set column headings and widths
+        self.file_tree.heading("File", text="File")
+        self.file_tree.column("File", width=200)
+        self.file_tree.heading("Type", text="Type")
+        self.file_tree.column("Type", width=80)
+        self.file_tree.heading("Customers", text="Customers")
+        self.file_tree.column("Customers", width=80)
+        self.file_tree.heading("Size", text="Size")
+        self.file_tree.column("Size", width=100)
+        self.file_tree.heading("Status", text="Status")
+        self.file_tree.column("Status", width=150)
         
         # Scrollbars
         v_scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.file_tree.yview)
@@ -341,10 +364,14 @@ class BulkImportGUI:
     def on_mode_change(self):
         """Handle platform mode change (C4R vs Engage)"""
         mode = self.mode.get()
+        import_type = self.import_type.get()
         
-        # Update API URL and Auth URL based on mode
+        # Update API URL and Auth URL based on mode and import type
         if mode == "C4R":
-            self.api_url.set("https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers")
+            if import_type == "customers":
+                self.api_url.set("https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers")
+            else:  # households
+                self.api_url.set("https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/households")
             self.auth_url.set("https://prod.cse.cloud4retail.co/auth-service/tenants/001/oauth/token")
             self.username.set("coop_sweden")
             self.password.set("coopsverige123")
@@ -356,7 +383,10 @@ class BulkImportGUI:
             self.client_id_entry.grid_remove()
             self.client_id_note.grid_remove()
         else:  # Engage
-            self.api_url.set("https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/customers")
+            if import_type == "customers":
+                self.api_url.set("https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/customers")
+            else:  # households
+                self.api_url.set("https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/households")
             self.auth_url.set("https://dev.cse.gk-engage.co/auth/realms/001-operators/protocol/openid-connect/token")
             self.username.set("CoopTechUser")
             self.password.set("Usygw&B#$n)3d_Sd")
@@ -371,6 +401,32 @@ class BulkImportGUI:
         # Only log if log_text widget exists (after initialization)
         if hasattr(self, 'log_text'):
             self.log_message(f"Switched to {mode} mode")
+    
+    def on_import_type_change(self):
+        """Handle import type change (customers vs households)"""
+        import_type = self.import_type.get()
+        mode = self.mode.get()
+        
+        # Update API URL based on import type
+        if mode == "C4R":
+            if import_type == "customers":
+                self.api_url.set("https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers")
+            else:  # households
+                self.api_url.set("https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/households")
+        else:  # Engage
+            if import_type == "customers":
+                self.api_url.set("https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/customers")
+            else:  # households
+                self.api_url.set("https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/households")
+        
+        # Update Failed Items tab name dynamically
+        if hasattr(self, 'notebook') and hasattr(self, 'failed_items_frame'):
+            tab_name = "Failed Households" if import_type == "households" else "Failed Customers"
+            self.notebook.tab(self.failed_items_frame, text=tab_name)
+        
+        # Only log if log_text widget exists (after initialization)
+        if hasattr(self, 'log_text'):
+            self.log_message(f"Switched to {import_type} import")
     
     def toggle_auth_mode(self):
         """Toggle between manual and automatic authentication modes"""
@@ -535,14 +591,24 @@ class BulkImportGUI:
                     # Get file info
                     file_size = os.path.getsize(file_path)
 
-                    # Try to count customers (this is the slow part)
+                    # Try to count customers/households and detect type
                     customer_count = 0
                     status = "Valid"
+                    detected_type = "Unknown"
 
                     try:
                         with open(file_path, 'r', encoding='utf-8') as f:
                             data = json.load(f)
-                        customer_count = len(data.get('data', []))
+                        
+                        # Detect file type based on JSON structure
+                        if 'data' in data:
+                            customer_count = len(data.get('data', []))
+                            detected_type = "Customers"
+                        elif 'households' in data:
+                            customer_count = len(data.get('households', []))
+                            detected_type = "Households"
+                        else:
+                            status = "Unknown format"
                     except Exception as e:
                         status = f"Error: {str(e)[:30]}..."
 
@@ -550,6 +616,7 @@ class BulkImportGUI:
                         'path': file_path,
                         'name': os.path.basename(file_path),
                         'size': file_size,
+                        'type': detected_type,
                         'customers': customer_count,
                         'status': status
                     })
@@ -559,6 +626,7 @@ class BulkImportGUI:
                         'path': file_path,
                         'name': os.path.basename(file_path),
                         'size': 0,
+                        'type': "Unknown",
                         'customers': 0,
                         'status': f"Error: {str(e)[:30]}..."
                     })
@@ -633,6 +701,7 @@ class BulkImportGUI:
             # Add to tree
             self.file_tree.insert("", tk.END, values=(
                 file_info['name'],
+                file_info['type'],
                 file_info['customers'],
                 f"{file_info['size']:,} bytes",
                 file_info['status']
@@ -663,14 +732,25 @@ class BulkImportGUI:
                 file_size = os.path.getsize(file_path)
                 total_size += file_size
                 
-                # Try to count customers
+                # Try to count customers/households and detect type
                 customer_count = 0
                 status = "Valid"
+                detected_type = "Unknown"
                 
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
-                    customer_count = len(data.get('data', []))
+                    
+                    # Detect file type based on JSON structure
+                    if 'data' in data:
+                        customer_count = len(data.get('data', []))
+                        detected_type = "Customers"
+                    elif 'households' in data:
+                        customer_count = len(data.get('households', []))
+                        detected_type = "Households"
+                    else:
+                        status = "Unknown format"
+                    
                     total_customers += customer_count
                     # Cache the customer count
                     self.customer_count_cache[file_path] = customer_count
@@ -682,6 +762,7 @@ class BulkImportGUI:
                 # Add to tree
                 self.file_tree.insert("", tk.END, values=(
                     os.path.basename(file_path),
+                    detected_type,
                     customer_count,
                     f"{file_size:,} bytes",
                     status
@@ -690,6 +771,7 @@ class BulkImportGUI:
             except Exception as e:
                 self.file_tree.insert("", tk.END, values=(
                     os.path.basename(file_path),
+                    "Unknown",
                     "?",
                     "?",
                     f"Error: {str(e)[:30]}..."
@@ -757,6 +839,7 @@ class BulkImportGUI:
 
                 importer = BulkCustomerImporter(
                     mode=self.mode.get(),
+                    import_type=self.import_type.get(),
                     api_url=self.api_url.get(),
                     auth_url=self.auth_url.get(),
                     gk_passport=self.gk_passport.get(),
@@ -773,6 +856,7 @@ class BulkImportGUI:
 
                 importer = BulkCustomerImporter(
                     mode=self.mode.get(),
+                    import_type=self.import_type.get(),
                     api_url=self.api_url.get(),
                     auth_token=self.auth_token.get(),
                     gk_passport=self.gk_passport.get(),
@@ -890,6 +974,7 @@ class BulkImportGUI:
             if self.use_auto_auth.get():
                 importer = BulkCustomerImporter(
                     mode=self.mode.get(),
+                    import_type=self.import_type.get(),
                     api_url=self.api_url.get(),
                     auth_url=self.auth_url.get(),
                     gk_passport=self.gk_passport.get(),
@@ -907,6 +992,7 @@ class BulkImportGUI:
             else:
                 importer = BulkCustomerImporter(
                     mode=self.mode.get(),
+                    import_type=self.import_type.get(),
                     api_url=self.api_url.get(),
                     auth_token=self.auth_token.get(),
                     gk_passport=self.gk_passport.get(),
@@ -1384,18 +1470,22 @@ Check the RETRY_INSTRUCTIONS.md file in the retry directory for detailed instruc
                 except Exception as e:
                     self.log_message(f"Error getting failed customers from importer: {e}")
 
-            # Also try to load from failed customers file
+            # Also try to load from failed items file
             if not failed_customers:
-                # Look for both timestamped and non-timestamped failed customers files
+                # Look for both timestamped and non-timestamped failed items files
+                # Determine directory based on import type
+                import_type = self.import_type.get()
+                item_name = "households" if import_type == "households" else "customers"
+                failed_items_dir = f"failed_{item_name}"
+                
                 failed_customers_files = []
-                failed_customers_dir = "failed_customers"
 
-                if os.path.exists(failed_customers_dir):
+                if os.path.exists(failed_items_dir):
                     try:
-                        # Find all failed customers JSON files
-                        for filename in os.listdir(failed_customers_dir):
-                            if filename.startswith('failed_customers') and filename.endswith('.json'):
-                                filepath = os.path.join(failed_customers_dir, filename)
+                        # Find all failed items JSON files
+                        for filename in os.listdir(failed_items_dir):
+                            if filename.startswith(f'failed_{item_name}') and filename.endswith('.json'):
+                                filepath = os.path.join(failed_items_dir, filename)
                                 if os.path.isfile(filepath):
                                     failed_customers_files.append(filepath)
 
@@ -1420,9 +1510,21 @@ Check the RETRY_INSTRUCTIONS.md file in the retry directory for detailed instruc
                 self.failed_customers_tree.insert("", tk.END, values=("No failed customers", "", "", "", ""))
             else:
                 # Add failed customers to tree
+                import_type = self.import_type.get()
                 for customer in failed_customers:
                     customer_id = customer.get('customerId', 'Unknown')
                     username = customer.get('username', 'Unknown')
+                    
+                    # If API didn't provide ID, try to get it from originalData
+                    if customer_id in ['Unknown', 'None', None]:
+                        original_data = customer.get('originalData')
+                        if original_data:
+                            if import_type == "households":
+                                customer_id = original_data.get('householdId', 'Unknown')
+                            else:
+                                person_data = original_data.get('person', original_data)
+                                customer_id = person_data.get('customerId', 'Unknown')
+                    
                     error = customer.get('error', 'Unknown error')
                     timestamp = customer.get('timestamp', 'Unknown')
                     batch_info = customer.get('batchInfo', 'Unknown')

@@ -24,6 +24,7 @@ class BulkCustomerImporter:
                  progress_callback=None,
                  # Authentication mode
                  mode: str = "C4R",  # "C4R" or "Engage"
+                 import_type: str = "customers",  # "customers" or "households"
                  # Authentication parameters
                  username: str = None,
                  password: str = None,
@@ -33,13 +34,23 @@ class BulkCustomerImporter:
                  failed_customers_file: str = "failed_customers.json"):
 
         self.mode = mode.upper()
+        self.import_type = import_type.lower()  # "customers" or "households"
         
-        # Set API URL default based on mode if not provided
+        # Determine data key based on import type
+        self.data_key = "households" if self.import_type == "households" else "data"
+        
+        # Set API URL default based on mode and import type if not provided
         if api_url is None:
             if self.mode == "C4R":
-                self.api_url = "https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers"
+                if self.import_type == "customers":
+                    self.api_url = "https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers"
+                else:
+                    self.api_url = "https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/households"
             elif self.mode == "ENGAGE":
-                self.api_url = "https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/customers"
+                if self.import_type == "customers":
+                    self.api_url = "https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/customers"
+                else:
+                    self.api_url = "https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/households"
             else:
                 raise ValueError(f"Invalid mode: {mode}. Must be 'C4R' or 'Engage'")
         else:
@@ -51,14 +62,16 @@ class BulkCustomerImporter:
         self.max_retries = max_retries
         self.progress_callback = progress_callback
 
-        # Create failed_customers directory if it doesn't exist
-        failed_customers_dir = "failed_customers"
-        os.makedirs(failed_customers_dir, exist_ok=True)
+        # Create failed items directory based on import type
+        item_name = "households" if self.import_type == "households" else "customers"
+        self.failed_items_dir = f"failed_{item_name}"
+        os.makedirs(self.failed_items_dir, exist_ok=True)
 
-        # Set failed customers file path in the dedicated folder
+        # Set failed items file path in the dedicated folder
         if not os.path.dirname(failed_customers_file):
-            # If no directory specified, put it in failed_customers folder
-            self.failed_customers_file = os.path.join(failed_customers_dir, failed_customers_file)
+            # If no directory specified, put it in failed_items folder
+            default_filename = f"failed_{item_name}.json"
+            self.failed_customers_file = os.path.join(self.failed_items_dir, default_filename)
         else:
             # If directory already specified, use as-is
             self.failed_customers_file = failed_customers_file
@@ -130,7 +143,7 @@ class BulkCustomerImporter:
     def _ensure_single_failures_structure(self):
         """Create the single_failures directory structure proactively"""
         try:
-            single_failures_base = os.path.join("failed_customers", "single_failures")
+            single_failures_base = os.path.join(self.failed_items_dir, "single_failures")
             os.makedirs(single_failures_base, exist_ok=True)
 
             # Create README if it doesn't exist
@@ -334,11 +347,11 @@ The structure helps organize failures by type for easier handling and retry.
         }
     
     def load_customer_data(self, file_path: str) -> List[Dict[Any, Any]]:
-        """Load customer data from JSON file"""
+        """Load customer/household data from JSON file"""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                return data.get('data', [])
+                return data.get(self.data_key, [])
         except Exception as e:
             self.logger.error(f"Error loading file {file_path}: {e}")
             return []
@@ -358,14 +371,14 @@ The structure helps organize failures by type for easier handling and retry.
             start_idx = lazy_batch_info['start_idx']
             end_idx = lazy_batch_info['end_idx']
 
-            # Load only the customers we need for this batch
+            # Load only the items we need for this batch (customers or households)
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                all_customers = data.get('data', [])
+                all_items = data.get(self.data_key, [])
 
                 # Extract only the slice we need
-                batch_customers = all_customers[start_idx:end_idx]
-                return batch_customers
+                batch_items = all_items[start_idx:end_idx]
+                return batch_items
 
         except Exception as e:
             self.logger.error(f"Error loading lazy batch from {lazy_batch_info.get('file_path', 'unknown')}: {e}")
@@ -404,8 +417,10 @@ The structure helps organize failures by type for easier handling and retry.
 
             # Parse structured customer results
             for customer_result in customer_results:
-                if isinstance(customer_result, dict) and customer_result.get('result') in ['FAILED', 'ERROR', 'CONFLICT']:
-                    self.logger.info(f"[FAILED] FOUND FAILED CUSTOMER: {customer_result.get('customerId')} - {customer_result.get('username')}")
+                # Check if result is not a success type (catch any failure)
+                result = customer_result.get('result', '').upper() if isinstance(customer_result, dict) else ''
+                if result and result not in ['SUCCESS', 'OK', 'IMPORTED', 'ACCEPTED']:
+                    self.logger.info(f"[FAILED] FOUND FAILED CUSTOMER: {customer_result.get('customerId')} - {customer_result.get('username')} - Result: {result}")
 
                     # Find the original customer data
                     customer_id = customer_result.get('customerId')
@@ -413,29 +428,52 @@ The structure helps organize failures by type for easier handling and retry.
 
                     # Try to match with original batch data
                     original_customer = None
-                    for customer in batch_customers:
-                        # Handle nested person structure
-                        person_data = customer.get('person', customer)
+                    
+                    # Skip matching if ID is None/null
+                    if customer_id is not None:
+                        for customer in batch_customers:
+                            # For households: check householdId directly
+                            if self.import_type == "households":
+                                if customer.get('householdId') == str(customer_id):
+                                    original_customer = customer
+                                    break
+                            else:
+                                # For customers: Handle nested person structure
+                                person_data = customer.get('person', customer)
 
-                        # Match by customer ID directly
-                        if person_data.get('customerId') == str(customer_id):
-                            original_customer = customer
-                            break
+                                # Match by customer ID directly
+                                if person_data.get('customerId') == str(customer_id):
+                                    original_customer = customer
+                                    break
 
-                        # Match by card number (check both 'number' and 'cardNumber' fields)
-                        if person_data.get('customerCards') and len(person_data['customerCards']) > 0:
-                            card_data = person_data['customerCards'][0]
-                            card_number = card_data.get('number') or card_data.get('cardNumber')
-                            if card_number and str(card_number) == str(customer_id):
-                                original_customer = customer
-                                break
+                                # Match by card number (check both 'number' and 'cardNumber' fields)
+                                if person_data.get('customerCards') and len(person_data['customerCards']) > 0:
+                                    card_data = person_data['customerCards'][0]
+                                    card_number = card_data.get('number') or card_data.get('cardNumber')
+                                    if card_number and str(card_number) == str(customer_id):
+                                        original_customer = customer
+                                        break
 
-                        # Match by personal number in username
-                        if username and person_data.get('personalNumber'):
-                            personal_num = person_data['personalNumber'].replace('-', '')
-                            if personal_num in username.replace('-', ''):
-                                original_customer = customer
-                                break
+                                # Match by personal number in username
+                                if username and person_data.get('personalNumber'):
+                                    personal_num = person_data['personalNumber'].replace('-', '')
+                                    if personal_num in username.replace('-', ''):
+                                        original_customer = customer
+                                        break
+                    
+                    # FALLBACK 1: If no match found and batch has only 1 item, assume it's the failed one
+                    if original_customer is None and len(batch_customers) == 1:
+                        original_customer = batch_customers[0]
+                        self.logger.warning(f"[FALLBACK] Could not match failed item by ID (ID was {customer_id}), but batch has only 1 item - assuming match")
+                    
+                    # FALLBACK 2: If ALL items failed and we're processing them in order, match by position
+                    # This handles the case where API returns failures without IDs
+                    if original_customer is None and len(customer_results) == len(batch_customers):
+                        # Calculate which position this failure is at
+                        failure_index = customer_results.index(customer_result)
+                        if failure_index < len(batch_customers):
+                            original_customer = batch_customers[failure_index]
+                            self.logger.warning(f"[FALLBACK] All {len(customer_results)} items failed - matching by position {failure_index}")
 
                     failed_customer = {
                         'customerId': customer_id,
@@ -470,29 +508,43 @@ The structure helps organize failures by type for easier handling and retry.
 
                         # Try to match with original batch data
                         original_customer = None
-                        for customer in batch_customers:
-                            # Handle nested person structure
-                            person_data = customer.get('person', customer)
+                        
+                        # Skip matching if ID is None/null
+                        if customer_id is not None:
+                            for customer in batch_customers:
+                                # For households: check householdId directly
+                                if self.import_type == "households":
+                                    if customer.get('householdId') == str(customer_id):
+                                        original_customer = customer
+                                        break
+                                else:
+                                    # For customers: Handle nested person structure
+                                    person_data = customer.get('person', customer)
 
-                            # Match by customer ID directly
-                            if person_data.get('customerId') == str(customer_id):
-                                original_customer = customer
-                                break
+                                    # Match by customer ID directly
+                                    if person_data.get('customerId') == str(customer_id):
+                                        original_customer = customer
+                                        break
 
-                            # Match by card number (check both 'number' and 'cardNumber' fields)
-                            if person_data.get('customerCards') and len(person_data['customerCards']) > 0:
-                                card_data = person_data['customerCards'][0]
-                                card_number = card_data.get('number') or card_data.get('cardNumber')
-                                if card_number and str(card_number) == str(customer_id):
-                                    original_customer = customer
-                                    break
+                                    # Match by card number (check both 'number' and 'cardNumber' fields)
+                                    if person_data.get('customerCards') and len(person_data['customerCards']) > 0:
+                                        card_data = person_data['customerCards'][0]
+                                        card_number = card_data.get('number') or card_data.get('cardNumber')
+                                        if card_number and str(card_number) == str(customer_id):
+                                            original_customer = customer
+                                            break
 
-                            # Match by username pattern (firstName lastName-personalNumber)
-                            if username and person_data.get('firstName') and person_data.get('lastName'):
-                                expected_username_start = f"{person_data['firstName']} {person_data['lastName']}"
-                                if username.upper().startswith(expected_username_start.upper().replace(' ', ' ')):
-                                    original_customer = customer
-                                    break
+                                    # Match by username pattern (firstName lastName-personalNumber)
+                                    if username and person_data.get('firstName') and person_data.get('lastName'):
+                                        expected_username_start = f"{person_data['firstName']} {person_data['lastName']}"
+                                        if username.upper().startswith(expected_username_start.upper().replace(' ', ' ')):
+                                            original_customer = customer
+                                            break
+                        
+                        # FALLBACK: If no match found and batch has only 1 item, assume it's the failed one
+                        if original_customer is None and len(batch_customers) == 1:
+                            original_customer = batch_customers[0]
+                            self.logger.warning(f"[FALLBACK] Could not match failed item by ID (ID was {customer_id}), but batch has only 1 item - assuming match")
 
                         failed_customer = {
                             'customerId': customer_id,
@@ -524,9 +576,11 @@ The structure helps organize failures by type for easier handling and retry.
                         failed_customers.append(failed_customer)
 
             if failed_customers:
-                self.logger.warning(f"[FAILED] TOTAL FAILED CUSTOMERS DETECTED: {len(failed_customers)}")
+                item_name = "households" if self.import_type == "households" else "customers"
+                self.logger.warning(f"[FAILED] TOTAL FAILED {item_name.upper()} DETECTED: {len(failed_customers)}")
             else:
-                self.logger.debug(f"[PARSE] No failed customers detected in this batch")
+                item_name = "households" if self.import_type == "households" else "customers"
+                self.logger.debug(f"[PARSE] No failed {item_name} detected in this batch")
 
         except Exception as e:
             self.logger.error(f"[ERROR] Error parsing API response for failures: {e}")
@@ -556,80 +610,116 @@ The structure helps organize failures by type for easier handling and retry.
             self._save_individual_failed_customers_by_reason(failed_customers)
 
     def _save_individual_failed_customers_by_reason(self, failed_customers: List[Dict[str, Any]]):
-        """Save individual failed customers organized by failure reason (CONFLICT, FAILED, ERROR)"""
+        """Save individual failed items (customers/households) organized by failure reason (CONFLICT, FAILED, ERROR)"""
         if not failed_customers:
             return
 
         try:
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Get terminology based on import type
+            item_name = "households" if self.import_type == "households" else "customers"
+            item_name_single = "household" if self.import_type == "households" else "customer"
 
-            # Group customers by failure reason
-            customers_by_reason = {
-                'CONFLICT': [],
-                'FAILED': [],
-                'ERROR': [],
-                'UNKNOWN': []  # For customers with unrecognized failure reasons
-            }
+            # Group items by failure reason dynamically
+            customers_by_reason = {}
 
             for customer in failed_customers:
-                result = customer.get('result', '').upper()
-                if result in customers_by_reason:
-                    customers_by_reason[result].append(customer)
-                else:
-                    # Handle any other failure reasons by putting them in UNKNOWN
-                    customers_by_reason['UNKNOWN'].append(customer)
-                    self.logger.warning(f"Unknown failure reason '{result}' for customer {customer.get('customerId', 'Unknown')}")
+                result = customer.get('result', 'UNKNOWN').upper()
+                # Use 'UNKNOWN' if result is empty or None
+                if not result or result == 'NONE':
+                    result = 'UNKNOWN'
+                
+                # Dynamically create folder for this result type
+                if result not in customers_by_reason:
+                    customers_by_reason[result] = []
+                
+                customers_by_reason[result].append(customer)
 
             # Save each group to separate folders
             for reason, customers in customers_by_reason.items():
                 if not customers:  # Skip empty groups
                     continue
 
-                # Create directory structure: failed_customers/single_failures/REASON
-                base_single_failures_dir = os.path.join("failed_customers", "single_failures")
+                # Create directory structure: failed_items/single_failures/REASON
+                base_single_failures_dir = os.path.join(f"failed_{item_name}", "single_failures")
                 reason_dir = os.path.join(base_single_failures_dir, reason)
                 os.makedirs(reason_dir, exist_ok=True)
 
-                # Save each customer as individual file
+                # Save each item as individual file
+                saved_count = 0
                 for i, customer in enumerate(customers, 1):
+                    # Try to get ID from API response first
                     customer_id = customer.get('customerId', f'unknown_{i}')
                     username = customer.get('username', f'unknown_user_{i}')
+                    
+                    # If API response doesn't have ID, try to extract from originalData
+                    original_data = customer.get('originalData')
+                    if original_data and (not customer_id or customer_id == 'None' or str(customer_id) == 'None'):
+                        # For households: get householdId
+                        if self.import_type == "households":
+                            customer_id = original_data.get('householdId', f'item{i:05d}')
+                        else:
+                            # For customers: get customerId from person data
+                            person_data = original_data.get('person', original_data)
+                            customer_id = person_data.get('customerId', f'item{i:05d}')
+                            # Also try to get a better username from person data
+                            if not username or username == 'None':
+                                first_name = person_data.get('firstName', '')
+                                last_name = person_data.get('lastName', '')
+                                if first_name or last_name:
+                                    username = f"{first_name}_{last_name}".strip('_')
 
                     # Create safe filename (remove invalid characters)
                     safe_customer_id = "".join(c for c in str(customer_id) if c.isalnum() or c in ('-', '_'))
                     safe_username = "".join(c for c in str(username) if c.isalnum() or c in ('-', '_'))
+                    
+                    # If both ID and username are still empty/None, add counter to make filename unique
+                    if not safe_customer_id or safe_customer_id == 'None':
+                        safe_customer_id = f'item{i:05d}'
+                    if not safe_username or safe_username == 'None':
+                        safe_username = f'unknown'
 
-                    customer_filename = f"customer_{safe_customer_id}_{safe_username}.json"
-                    customer_filepath = os.path.join(reason_dir, customer_filename)
-
-                    # Prepare customer data in direct import format (exactly like retry batches)
-                    original_data = customer.get('originalData')
-                    if original_data:
-                        # Format exactly like retry batches - pure data only, no metadata
-                        customer_data = {
-                            "data": [original_data]
-                        }
+                    # For households, skip username in filename (not relevant)
+                    if self.import_type == "households":
+                        item_filename = f"{item_name_single}_{safe_customer_id}.json"
                     else:
-                        # Skip customers without original data
-                        self.logger.warning(f"Skipping customer {customer.get('customerId', 'Unknown')} - no original data available for retry")
+                        item_filename = f"{item_name_single}_{safe_customer_id}_{safe_username}.json"
+                    
+                    item_filepath = os.path.join(reason_dir, item_filename)
+
+                    # Prepare item data in direct import format (exactly like retry batches)
+                    original_data = customer.get('originalData')
+                    
+                    if original_data:
+                        # Format exactly like retry batches - use correct data key
+                        item_data = {
+                            self.data_key: [original_data]
+                        }
+                        
+                        # Save individual item file
+                        with open(item_filepath, 'w', encoding='utf-8') as f:
+                            json.dump(item_data, f, indent=2, ensure_ascii=False)
+                        
+                        saved_count += 1
+                    else:
+                        # Skip items without original data
+                        self.logger.warning(f"Skipping {item_name_single} {customer.get('customerId', 'Unknown')} - no original data available for retry")
                         continue
 
-                    # Save individual customer file
-                    with open(customer_filepath, 'w', encoding='utf-8') as f:
-                        json.dump(customer_data, f, indent=2, ensure_ascii=False)
-
-                self.logger.info(f"[INDIVIDUAL CUSTOMERS] Saved {len(customers)} {reason} customers to {reason_dir}")
+                self.logger.info(f"[INDIVIDUAL {item_name.upper()}] Saved {saved_count}/{len(customers)} {reason} {item_name} to {reason_dir}")
 
                 # Create summary file for this failure reason
                 summary_filepath = os.path.join(reason_dir, f"_SUMMARY_{reason}.json")
                 summary_data = {
+                    "import_type": self.import_type,
                     "failure_reason": reason,
-                    "total_customers": len(customers),
+                    f"total_{item_name}": len(customers),
                     "timestamp": timestamp,
                     "directory": reason_dir,
-                    "directory_structure": f"failed_customers/single_failures/{reason}",
-                    "customers_list": [
+                    "directory_structure": f"failed_{item_name}/single_failures/{reason}",
+                    f"{item_name}_list": [
                         {
                             "customerId": c.get('customerId'),
                             "username": c.get('username'),
@@ -646,21 +736,21 @@ The structure helps organize failures by type for easier handling and retry.
             self.logger.error(f"[ERROR] Error saving individual failed customers by reason: {e}")
 
     def _save_failed_batch(self, batch: List[Dict[Any, Any]], batch_id: int):
-        """Save entire batch that contains failed customers to batches_to_retry directory"""
+        """Save entire batch that contains failed items to batches_to_retry directory"""
         with self.failed_customers_lock:
             # Create timestamped retry directory to avoid overwriting
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            retry_dir = os.path.join("failed_customers", f"batches_to_retry_{timestamp}")
+            retry_dir = os.path.join(self.failed_items_dir, f"batches_to_retry_{timestamp}")
             os.makedirs(retry_dir, exist_ok=True)
 
             # Create filename with batch number (5 digits for 50K+ files)
             batch_filename = f"batch_{batch_id:05d}.json"
             batch_filepath = os.path.join(retry_dir, batch_filename)
 
-            # Save the batch in the same format as the original API call
+            # Save the batch in the same format as the original API call using correct data key
             batch_data = {
-                "data": batch
+                self.data_key: batch
             }
 
             try:
@@ -676,16 +766,16 @@ The structure helps organize failures by type for easier handling and retry.
             # Create timestamped response_nok directory
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            response_nok_dir = os.path.join("failed_customers", f"response_nok_{timestamp}")
+            response_nok_dir = os.path.join(self.failed_items_dir, f"response_nok_{timestamp}")
             os.makedirs(response_nok_dir, exist_ok=True)
 
             # Create filename with batch number and status code (5 digits for 50K+ files)
             batch_filename = f"batch_{batch_id:05d}_status_{status_code}.json"
             batch_filepath = os.path.join(response_nok_dir, batch_filename)
 
-            # Save the batch in the same format as the original API call
+            # Save the batch in the same format as the original API call using correct data key
             batch_data = {
-                "data": batch,
+                self.data_key: batch,
                 "error_info": {
                     "batch_id": batch_id,
                     "status_code": status_code,
@@ -708,16 +798,16 @@ The structure helps organize failures by type for easier handling and retry.
             # Create timestamped auth_service_down directory
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            auth_down_dir = os.path.join("failed_customers", f"auth_service_down_{timestamp}")
+            auth_down_dir = os.path.join(self.failed_items_dir, f"auth_service_down_{timestamp}")
             os.makedirs(auth_down_dir, exist_ok=True)
 
             # Create filename with batch number
             batch_filename = f"batch_{batch_id:05d}_auth_service_down.json"
             batch_filepath = os.path.join(auth_down_dir, batch_filename)
 
-            # Save the batch with auth service error info
+            # Save the batch with auth service error info using correct data key
             batch_data = {
-                "data": batch,
+                self.data_key: batch,
                 "auth_service_error": {
                     "batch_id": batch_id,
                     "error_message": error_message,
@@ -743,7 +833,7 @@ The structure helps organize failures by type for easier handling and retry.
         try:
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            resume_dir = os.path.join("failed_customers", f"resume_work_{timestamp}")
+            resume_dir = os.path.join(self.failed_items_dir, f"resume_work_{timestamp}")
             os.makedirs(resume_dir, exist_ok=True)
 
             # Save remaining batch info
@@ -859,11 +949,14 @@ The structure helps organize failures by type for easier handling and retry.
                 'Content-Type': 'application/json'
             }
         
-        payload = {'data': batch}
+        # Use the correct data key based on import type (data for customers, households for households)
+        payload = {self.data_key: batch}
 
+        item_name = "households" if self.import_type == "households" else "customers"
+        
         for attempt in range(self.max_retries):
             try:
-                self.logger.info(f"Sending batch {batch_id} (attempt {attempt + 1}/{self.max_retries}) - {len(batch)} customers")
+                self.logger.info(f"Sending batch {batch_id} (attempt {attempt + 1}/{self.max_retries}) - {len(batch)} {item_name}")
                 
                 response = requests.post(
                     self.api_url,
@@ -888,8 +981,8 @@ The structure helps organize failures by type for easier handling and retry.
                         self.logger.warning(f"⚠️ Batch {batch_id} - JSON decode error: {e}")
                         response_data = {'raw_response': response_text}
 
-                    # ALWAYS check for failed customers within successful response
-                    self.logger.info(f"[CHECK] Batch {batch_id} - Checking for failed customers in response...")
+                    # ALWAYS check for failed items within successful response
+                    self.logger.info(f"[CHECK] Batch {batch_id} - Checking for failed {item_name} in response...")
 
                     failed_customers = self._parse_api_response_for_failures(response_data, batch)
 
@@ -897,13 +990,13 @@ The structure helps organize failures by type for easier handling and retry.
                         self._save_failed_customers(failed_customers)
                         # Save the entire batch for easy retry
                         self._save_failed_batch(batch, batch_id)
-                        self.logger.error(f"[FAILED] Batch {batch_id} completed with HTTP 200 but {len(failed_customers)} customers FAILED!")
+                        self.logger.error(f"[FAILED] Batch {batch_id} completed with HTTP 200 but {len(failed_customers)} {item_name} FAILED!")
                         for fc in failed_customers[:3]:  # Show first 3 failures
                             self.logger.error(f"   - Failed: {fc['customerId']} ({fc['username']}) - {fc['error']}")
                         if len(failed_customers) > 3:
                             self.logger.error(f"   - ... and {len(failed_customers) - 3} more failures")
                     else:
-                        self.logger.info(f"[SUCCESS] Batch {batch_id} - No failed customers detected")
+                        self.logger.info(f"[SUCCESS] Batch {batch_id} - No failed {item_name} detected")
 
                     self.logger.info(f"[SUCCESS] Batch {batch_id} completed successfully - {self.completed_batches}/{self.total_batches}")
 
@@ -1103,11 +1196,11 @@ The structure helps organize failures by type for easier handling and retry.
         total_customers = 0
 
         for file_path in file_paths:
-            # Only count customers, don't load them yet
+            # Only count items, don't load them yet
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    customers_count = len(data.get('data', []))
+                    customers_count = len(data.get(self.data_key, []))
 
                 if customers_count > 0:
                     # Calculate how many batches this file will create
@@ -1126,23 +1219,27 @@ The structure helps organize failures by type for easier handling and retry.
                         })
 
                     total_customers += customers_count
-                    self.logger.info(f"Planned {customers_count} customers from {file_path} -> {num_batches} batches (not loaded yet)")
+                    item_name = "households" if self.import_type == "households" else "customers"
+                    self.logger.info(f"Planned {customers_count} {item_name} from {file_path} -> {num_batches} batches (not loaded yet)")
                 else:
-                    self.logger.warning(f"No customers found in {file_path}")
+                    item_name = "households" if self.import_type == "households" else "customers"
+                    self.logger.warning(f"No {item_name} found in {file_path}")
 
             except Exception as e:
                 self.logger.error(f"Error reading file {file_path}: {e}")
 
         if not lazy_batches:
-            self.logger.error("No customer data found!")
-            return {'status': 'error', 'message': 'No customer data found'}
+            item_name = "household" if self.import_type == "households" else "customer"
+            self.logger.error(f"No {item_name} data found!")
+            return {'status': 'error', 'message': f'No {item_name} data found'}
 
         self.total_batches = len(lazy_batches)
         self.remaining_batches = lazy_batches.copy()  # Track remaining work
-        self.logger.info(f"[STATS] Total customers to import: {total_customers}")
+        item_name = "households" if self.import_type == "households" else "customers"
+        self.logger.info(f"[STATS] Total {item_name} to import: {total_customers}")
         self.logger.info(f"[STATS] Planned {len(lazy_batches)} batches (lazy loading - files will be loaded during processing)")
 
-        self.logger.info(f"[STATS] Created {self.total_batches} batches of {self.batch_size} customers each")
+        self.logger.info(f"[STATS] Created {self.total_batches} batches of {self.batch_size} {item_name} each")
         self.logger.info(f"[STATS] Using {self.max_workers} worker threads")
         
         # Process lazy batches with thread pool
@@ -1173,7 +1270,8 @@ The structure helps organize failures by type for easier handling and retry.
                     # Log memory-efficient completion
                     status = result.get('status', 'unknown')
                     customers_count = result.get('customers_count', 0)
-                    self.logger.debug(f"[COMPLETE] Batch {batch_id} completed ({status}) - {customers_count} customers processed and freed from memory")
+                    item_name = "households" if self.import_type == "households" else "customers"
+                    self.logger.debug(f"[COMPLETE] Batch {batch_id} completed ({status}) - {customers_count} {item_name} processed and freed from memory")
 
                 except Exception as e:
                     self.logger.error(f"[ERROR] Batch {batch_id} failed with exception: {e}")
@@ -1204,8 +1302,10 @@ The structure helps organize failures by type for easier handling and retry.
         failed_batches = len([r for r in results if r.get('status') == 'failed'])
         stopped_batches = len([r for r in results if r.get('status') == 'stopped'])
 
-        # Use the total_customers we calculated during loading
-        successful_customers = successful_batches * self.batch_size
+        # Calculate actual customer counts from results
+        successful_customers = sum(r.get('customers_count', 0) for r in results if r.get('status') == 'success')
+        failed_customers_count = sum(r.get('customers_count', 0) for r in results if r.get('status') == 'failed')
+        stopped_customers_count = sum(lazy_batches[r['batch_id']-1]['expected_size'] for r in results if r.get('status') == 'stopped')
         
         summary = {
             'status': 'completed',
@@ -1217,16 +1317,17 @@ The structure helps organize failures by type for easier handling and retry.
             'successful_batches': successful_batches,
             'failed_batches': failed_batches,
             'successful_customers': successful_customers,
-            'failed_customers': failed_batches * self.batch_size,
-            'success_rate': f"{(successful_batches/self.total_batches)*100:.1f}%"
+            'failed_customers': failed_customers_count,
+            'success_rate': f"{(successful_customers/total_customers)*100:.1f}%" if total_customers > 0 else '0.0%'
         }
         
+        item_name = "households" if self.import_type == "households" else "customers"
         self.logger.info("[SUMMARY] IMPORT SUMMARY:")
-        self.logger.info(f"   Total customers: {total_customers}")
+        self.logger.info(f"   Total {item_name}: {total_customers}")
         self.logger.info(f"   Successful: {successful_customers}")
-        self.logger.info(f"   Failed: {failed_batches * self.batch_size}")
+        self.logger.info(f"   Failed: {failed_customers_count}")
         if stopped_batches > 0:
-            self.logger.info(f"   Stopped: {stopped_batches * self.batch_size}")
+            self.logger.info(f"   Stopped: {stopped_customers_count}")
         self.logger.info(f"   Success rate: {summary['success_rate']}")
         self.logger.info(f"   Duration: {duration}")
 
@@ -1263,23 +1364,24 @@ The structure helps organize failures by type for easier handling and retry.
         if api_failures > 0:
             self.logger.error(f"   API failures: {api_failures} batches")
 
-        # Show individual customer failure breakdown
+        # Show individual item failure breakdown
         if self.failed_customers:
+            item_name = "households" if self.import_type == "households" else "customers"
             conflict_count = len([c for c in self.failed_customers if c.get('result', '').upper() == 'CONFLICT'])
             failed_count = len([c for c in self.failed_customers if c.get('result', '').upper() == 'FAILED'])
             error_count = len([c for c in self.failed_customers if c.get('result', '').upper() == 'ERROR'])
             unknown_count = len(self.failed_customers) - conflict_count - failed_count - error_count
 
-            self.logger.info("[FAILURES] INDIVIDUAL CUSTOMER FAILURES:")
+            self.logger.info(f"[FAILURES] INDIVIDUAL {item_name.upper()} FAILURES:")
             if conflict_count > 0:
-                self.logger.info(f"   CONFLICT customers: {conflict_count}")
+                self.logger.info(f"   CONFLICT {item_name}: {conflict_count}")
             if failed_count > 0:
-                self.logger.info(f"   FAILED customers: {failed_count}")
+                self.logger.info(f"   FAILED {item_name}: {failed_count}")
             if error_count > 0:
-                self.logger.info(f"   ERROR customers: {error_count}")
+                self.logger.info(f"   ERROR {item_name}: {error_count}")
             if unknown_count > 0:
-                self.logger.info(f"   UNKNOWN reason customers: {unknown_count}")
-            self.logger.info("   Individual customer files saved in failed_customers/single_failures/* directories")
+                self.logger.info(f"   UNKNOWN reason {item_name}: {unknown_count}")
+            self.logger.info(f"   Individual {item_name} files saved in failed_{item_name}/single_failures/* directories")
 
         # Save failed batches for retry
         if self.failed_batches:
@@ -1293,6 +1395,10 @@ The structure helps organize failures by type for easier handling and retry.
             return
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Get item terminology based on import type
+        item_name = "households" if self.import_type == "households" else "customers"
+        item_name_single = "household" if self.import_type == "households" else "customer"
 
         # Create retry directory
         retry_dir = f"retry_batches_{timestamp}"
@@ -1303,9 +1409,9 @@ The structure helps organize failures by type for easier handling and retry.
         # Save each failed batch as a separate importable file
         retry_files = []
         for i, failed_batch in enumerate(self.failed_batches, 1):
-            # Create properly formatted batch for re-import
+            # Create properly formatted batch for re-import using the correct data key
             retry_batch = {
-                "data": failed_batch['customers']
+                self.data_key: failed_batch['customers']  # 'customers' is generic batch items storage
             }
 
             # Generate filename (5 digits for 50K+ files)
@@ -1319,21 +1425,23 @@ The structure helps organize failures by type for easier handling and retry.
             retry_files.append(retry_filename)
 
             # Log details about this failed batch
-            customer_count = len(failed_batch['customers'])
+            item_count = len(failed_batch['customers'])
             error_msg = failed_batch.get('error', 'Unknown error')
-            self.logger.info(f"[RETRY] {retry_filename}: {customer_count} customers (Error: {error_msg})")
+            self.logger.info(f"[RETRY] {retry_filename}: {item_count} {item_name} (Error: {error_msg})")
 
         # Create summary file with error details
         summary_file = os.path.join(retry_dir, "retry_summary.json")
+        total_failed_items = sum(len(batch['customers']) for batch in self.failed_batches)
         summary_data = {
             'timestamp': timestamp,
+            'import_type': self.import_type,
             'total_failed_batches': len(self.failed_batches),
-            'total_failed_customers': sum(len(batch['customers']) for batch in self.failed_batches),
+            f'total_failed_{item_name}': total_failed_items,
             'retry_files': retry_files,
             'error_details': [
                 {
                     'batch_id': batch['batch_id'],
-                    'customer_count': len(batch['customers']),
+                    f'{item_name_single}_count': len(batch['customers']),
                     'error': batch.get('error', 'Unknown error'),
                     'status_code': batch.get('status_code'),
                     'retry_file': f"retry_batch_{i:05d}_failed.json"
@@ -1350,8 +1458,9 @@ The structure helps organize failures by type for easier handling and retry.
         instructions_content = f"""# Failed Batch Retry Instructions
 
 ## Summary
+- **Import Type**: {self.import_type.title()}
 - **Failed Batches**: {len(self.failed_batches)}
-- **Failed Customers**: {sum(len(batch['customers']) for batch in self.failed_batches)}
+- **Failed {item_name.title()}**: {total_failed_items}
 - **Generated**: {timestamp}
 
 ## How to Retry
@@ -1361,15 +1470,16 @@ The structure helps organize failures by type for easier handling and retry.
 2. Go to **Files** tab
 3. Click **"Add Directory"**
 4. Select this directory: `{retry_dir}`
-5. Configure your API credentials
-6. Click **"Start Import"**
+5. Set Import Type to **{self.import_type.title()}**
+6. Configure your API credentials
+7. Click **"Start Import"**
 
 ### Option 2: Use Individual Files
 1. Load specific retry files one by one:
 {chr(10).join(f'   - {filename}' for filename in retry_files)}
 
 ## Error Details
-{chr(10).join(f'- **{batch["retry_file"]}**: {batch["customer_count"]} customers - {batch["error"]}' for batch in summary_data["error_details"])}
+{chr(10).join(f'- **{batch["retry_file"]}**: {batch[f"{item_name_single}_count"]} {item_name} - {batch["error"]}' for batch in summary_data["error_details"])}
 
 ## Files in this Directory
 - `retry_summary.json` - Detailed error information
