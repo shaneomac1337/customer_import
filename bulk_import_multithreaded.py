@@ -14,7 +14,7 @@ from auth_manager import AuthenticationManager
 class BulkCustomerImporter:
     def __init__(self,
                  api_url: str = None,
-                 auth_url: str = None,  # Configurable auth URL
+                 auth_url: str = None,
                  auth_token: str = None,
                  gk_passport: str = "1.1:CiMg46zV+88yKOOMxZPwMjIDMDAxOg5idXNpbmVzc1VuaXRJZBIKCAISBnVzZXJJZBoSCAIaCGNsaWVudElkIgR3c0lkIhoaGGI6Y3VzdC5jdXN0b21lci5pbXBvcnRlcg==",
                  batch_size: int = 70,
@@ -22,24 +22,23 @@ class BulkCustomerImporter:
                  delay_between_requests: float = 1.0,
                  max_retries: int = 3,
                  progress_callback=None,
-                 # Authentication mode
                  mode: str = "C4R",  # "C4R" or "Engage"
+                 environment: str = "dev",  # "dev" or "prod" (for Engage mode)
                  import_type: str = "customers",  # "customers" or "households"
-                 # Authentication parameters
                  username: str = None,
                  password: str = None,
                  use_auto_auth: bool = False,
-                 client_id: str = None,  # For Engage mode
-                 # Failed customers tracking
+                 client_id: str = None,
                  failed_customers_file: str = "failed_customers.json"):
-
+        
         self.mode = mode.upper()
+        self.environment = environment.lower()  # "dev" or "prod"
         self.import_type = import_type.lower()  # "customers" or "households"
         
         # Determine data key based on import type
         self.data_key = "households" if self.import_type == "households" else "data"
         
-        # Set API URL default based on mode and import type if not provided
+        # Set API URL default based on mode, environment, and import type if not provided
         if api_url is None:
             if self.mode == "C4R":
                 if self.import_type == "customers":
@@ -47,10 +46,12 @@ class BulkCustomerImporter:
                 else:
                     self.api_url = "https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/households"
             elif self.mode == "ENGAGE":
+                # Determine base URL based on environment
+                base_url = "https://prod.cse.gk-engage.co" if self.environment == "prod" else "https://dev.cse.gk-engage.co"
                 if self.import_type == "customers":
-                    self.api_url = "https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/customers"
+                    self.api_url = f"{base_url}/api/customer-profile/services/rest/customers-import/v1/customers"
                 else:
-                    self.api_url = "https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/households"
+                    self.api_url = f"{base_url}/api/customer-profile/services/rest/customers-import/v1/households"
             else:
                 raise ValueError(f"Invalid mode: {mode}. Must be 'C4R' or 'Engage'")
         else:
@@ -90,6 +91,7 @@ class BulkCustomerImporter:
             # Use automatic authentication manager
             self.auth_manager = AuthenticationManager(
                 mode=self.mode,
+                environment=self.environment,  # Pass environment for Engage mode
                 username=username,
                 password=password,
                 gk_passport=gk_passport,

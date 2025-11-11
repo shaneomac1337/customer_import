@@ -11,7 +11,8 @@ from datetime import datetime
 
 def split_json_simple(input_file, batch_size=100, output_dir="customer_batches"):
     """
-    Split a large JSON file by reading it in chunks and parsing incrementally.
+    Split a large JSON file (customers or households) by reading it in chunks.
+    Auto-detects format and preserves the data key.
     This approach uses less memory than loading the entire file.
     """
     
@@ -50,44 +51,91 @@ def split_json_simple(input_file, batch_size=100, output_dir="customer_batches")
             first_chars = f.read(1000)
             f.seek(0)  # Reset to beginning
             
+            # Auto-detect format and data key
+            # Input can be: 'data', 'customers', or 'households'
+            # Output will be: 'data' (for customers) or 'households' (for households)
+            input_key = None
+            output_key = None
+            item_type = None
+            
             if first_chars.strip().startswith('['):
                 # It's a JSON array
                 print("Detected JSON array format")
                 customers_data = json.load(f)
+                input_key = 'array'
+                output_key = 'data'  # Default to 'data' for arrays
+                item_type = 'items'
+                
+            elif '"households"' in first_chars:
+                # It's a households import file
+                print("Detected JSON object with 'households' key")
+                full_data = json.load(f)
+                customers_data = full_data.get('households')
+                input_key = 'households'
+                output_key = 'households'
+                item_type = 'households'
+                
+            elif '"customers"' in first_chars:
+                # It's a customers file with 'customers' key - needs conversion
+                print("Detected JSON object with 'customers' key")
+                print("Note: Converting 'customers' key to 'data' key for import compatibility")
+                full_data = json.load(f)
+                customers_data = full_data.get('customers')
+                input_key = 'customers'
+                output_key = 'data'  # Convert to 'data' for import system
+                item_type = 'customers'
                 
             elif '"data"' in first_chars:
-                # It's likely wrapped in a data object
+                # It's likely wrapped in a data object (customers)
                 print("Detected JSON object with 'data' key")
                 full_data = json.load(f)
                 customers_data = full_data.get('data', full_data)
+                input_key = 'data'
+                output_key = 'data'
+                item_type = 'customers'
                 
             else:
-                # Try to load as-is
+                # Try to load as-is and detect
                 print("Attempting to parse as generic JSON object")
                 full_data = json.load(f)
                 
-                # Try to find the customers array
+                # Try to find the data array
                 if isinstance(full_data, list):
                     customers_data = full_data
+                    data_key = 'data'
+                    item_type = 'items'
                 elif isinstance(full_data, dict):
-                    # Look for common keys that might contain the customer array
-                    possible_keys = ['data', 'customers', 'items', 'results']
+                    # Look for common keys (prioritize households, customers, data)
+                    possible_keys = ['households', 'customers', 'data', 'items', 'results']
                     customers_data = None
                     
                     for key in possible_keys:
                         if key in full_data and isinstance(full_data[key], list):
                             customers_data = full_data[key]
-                            print(f"Found customers in '{key}' key")
+                            input_key = key
+                            # Map to correct output key
+                            if key == 'households':
+                                output_key = 'households'
+                                item_type = 'households'
+                            elif key == 'customers':
+                                output_key = 'data'  # Convert customers to data
+                                item_type = 'customers'
+                                print(f"Note: Converting '{key}' key to 'data' key for import compatibility")
+                            else:
+                                output_key = 'data'
+                                item_type = 'customers'
+                            print(f"Found {item_type} in '{key}' key")
                             break
                     
                     if customers_data is None:
-                        print("ERROR: Could not find customer array in JSON structure")
+                        print("ERROR: Could not find data array in JSON structure")
                         return False
                 else:
                     print("ERROR: Unexpected JSON structure")
                     return False
         
-        print(f"Found {len(customers_data):,} customers to process")
+        print(f"Found {len(customers_data):,} {item_type} to process")
+        print(f"Will use '{output_key}' key in output files")
         
         # Process customers in batches
         for i, customer in enumerate(customers_data):
@@ -96,8 +144,8 @@ def split_json_simple(input_file, batch_size=100, output_dir="customer_batches")
             
             # When batch is full, save it
             if len(current_batch) >= batch_size:
-                save_batch_simple(current_batch, batch_num, output_dir)
-                print(f"Batch {batch_num:04d}: Saved {len(current_batch)} customers (Total: {total_customers:,})")
+                save_batch_simple(current_batch, batch_num, output_dir, output_key)
+                print(f"Batch {batch_num:04d}: Saved {len(current_batch)} {item_type} (Total: {total_customers:,})")
                 
                 current_batch = []
                 batch_num += 1
@@ -107,20 +155,22 @@ def split_json_simple(input_file, batch_size=100, output_dir="customer_batches")
                     progress_pct = (total_customers / len(customers_data)) * 100
                     print(f"  📊 Progress: {progress_pct:.1f}% ({total_customers:,}/{len(customers_data):,} customers)")
         
-        # Save remaining customers in the last batch
+        # Save remaining items in the last batch
         if current_batch:
-            save_batch_simple(current_batch, batch_num, output_dir)
-            print(f"Batch {batch_num:04d}: Saved {len(current_batch)} customers (Final batch)")
+            save_batch_simple(current_batch, batch_num, output_dir, output_key)
+            print(f"Batch {batch_num:04d}: Saved {len(current_batch)} {item_type} (Final batch)")
         
         # Generate summary
-        generate_summary_simple(output_dir, total_customers, batch_num, batch_size)
+        generate_summary_simple(output_dir, total_customers, batch_num, batch_size, output_key, item_type)
         
         print("\n" + "=" * 60)
         print("SPLITTING COMPLETE!")
         print("=" * 60)
-        print(f"[STATS] Total customers processed: {total_customers:,}")
+        print(f"[STATS] Import type: {item_type}")
+        print(f"[STATS] Output key: {output_key}")
+        print(f"[STATS] Total items processed: {total_customers:,}")
         print(f"[STATS] Total batches created: {batch_num}")
-        print(f"[STATS] Customers per batch: {batch_size}")
+        print(f"[STATS] Items per batch: {batch_size}")
         print(f"[STATS] Output directory: {output_dir}")
         print(f"[STATS] Average batch size: {total_customers/batch_num:.1f}")
         print("\n[SUCCESS] Files are ready for bulk import!")
@@ -144,10 +194,10 @@ def split_json_simple(input_file, batch_size=100, output_dir="customer_batches")
         print(f"\nERROR: Failed to process file: {str(e)}")
         return False
 
-def save_batch_simple(customers, batch_num, output_dir):
-    """Save a batch of customers to a JSON file"""
+def save_batch_simple(customers, batch_num, output_dir, data_key='data'):
+    """Save a batch of customers/households to a JSON file"""
     batch_data = {
-        "data": customers
+        data_key: customers
     }
     
     filename = f"batch_{batch_num:04d}.json"
@@ -156,11 +206,13 @@ def save_batch_simple(customers, batch_num, output_dir):
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(batch_data, f, indent=2, ensure_ascii=False)
 
-def generate_summary_simple(output_dir, total_customers, total_batches, batch_size):
+def generate_summary_simple(output_dir, total_customers, total_batches, batch_size, data_key='data', item_type='items'):
     """Generate a summary file with statistics"""
     summary = {
         "split_date": datetime.now().isoformat(),
-        "total_customers": total_customers,
+        "import_type": item_type,
+        "data_key": data_key,
+        "total_items": total_customers,
         "total_batches": total_batches,
         "target_batch_size": batch_size,
         "actual_average_batch_size": total_customers / total_batches if total_batches > 0 else 0,

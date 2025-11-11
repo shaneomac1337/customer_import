@@ -86,11 +86,15 @@ def split_json_file(input_file, batch_size=1, output_dir="split_customers"):
         
         # Calculate number of files needed
         num_files = math.ceil(total_customers / batch_size)
-        print(f"Will create {num_files} individual customer files")
+        print(f"Will create {num_files} batch files ({batch_size} items per batch)")
         
-        # Create output directory
+        # Create output directory with type-specific name
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        full_output_dir = f"{output_dir}_{timestamp}"
+        if item_type == 'households':
+            dir_name = f"household_batches_{timestamp}"
+        else:
+            dir_name = f"customer_batches_{timestamp}"
+        full_output_dir = dir_name
         os.makedirs(full_output_dir, exist_ok=True)
         print(f"Created output directory: {full_output_dir}")
         
@@ -109,8 +113,10 @@ def split_json_file(input_file, batch_size=1, output_dir="split_customers"):
             }
 
             # Generate filename (5 digits for 50K+ files)
-            item_prefix = "household" if output_key == "households" else "customer"
-            customer_filename = f"{item_prefix}_{customer_num + 1:05d}.json"
+            if output_key == "households":
+                customer_filename = f"household_batch_{customer_num + 1:05d}.json"
+            else:
+                customer_filename = f"customer_batch_{customer_num + 1:05d}.json"
             customer_filepath = os.path.join(full_output_dir, customer_filename)
 
             # Save customer file
@@ -172,10 +178,10 @@ def split_json_file(input_file, batch_size=1, output_dir="split_customers"):
 
 if __name__ == "__main__":
     # Configuration
-    BATCH_SIZE = 1
-    OUTPUT_DIR = "individual_customers"
+    BATCH_SIZE = 100
+    OUTPUT_DIR = "customer_batches"
 
-    print("JSON INDIVIDUAL CUSTOMER SPLITTER")
+    print("JSON BATCH SPLITTER (100 items per batch)")
     print("=" * 50)
     
     # Check for command line arguments (drag and drop support)
@@ -204,7 +210,7 @@ if __name__ == "__main__":
     success = split_json_file(INPUT_FILE, BATCH_SIZE, OUTPUT_DIR)
     
     if success:
-        print(f"\nAll done! Your individual customer files are ready for import.")
+        print(f"\nAll done! Your batch files are ready for import.")
     else:
         print(f"\nSplitting failed. Please check the error messages above.")
     

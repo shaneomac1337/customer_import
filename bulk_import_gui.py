@@ -25,6 +25,7 @@ class BulkImportGUI:
         
         # Variables
         self.mode = tk.StringVar(value="C4R")  # C4R or Engage
+        self.environment = tk.StringVar(value="dev")  # dev or prod (for Engage)
         self.import_type = tk.StringVar(value="customers")  # customers or households
         self.api_url = tk.StringVar(value="https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers")
         self.auth_url = tk.StringVar(value="https://prod.cse.cloud4retail.co/auth-service/tenants/001/oauth/token")
@@ -111,6 +112,16 @@ class BulkImportGUI:
                        value="C4R", command=self.on_mode_change).pack(side=tk.LEFT, padx=(0, 20))
         ttk.Radiobutton(platform_frame, text="GK Cloud", variable=self.mode,
                        value="Engage", command=self.on_mode_change).pack(side=tk.LEFT)
+        
+        # Environment (for Engage mode)
+        self.environment_frame = ttk.Frame(mode_group)
+        self.environment_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(self.environment_frame, text="Environment:").pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Radiobutton(self.environment_frame, text="Development", variable=self.environment,
+                       value="dev", command=self.on_environment_change).pack(side=tk.LEFT, padx=(0, 20))
+        ttk.Radiobutton(self.environment_frame, text="Production", variable=self.environment,
+                       value="prod", command=self.on_environment_change).pack(side=tk.LEFT)
+        ttk.Label(self.environment_frame, text="(Engage only)", foreground="gray").pack(side=tk.LEFT, padx=(10, 0))
         
         # Import type
         import_type_frame = ttk.Frame(mode_group)
@@ -364,18 +375,19 @@ class BulkImportGUI:
     def on_mode_change(self):
         """Handle platform mode change (C4R vs Engage)"""
         mode = self.mode.get()
-        import_type = self.import_type.get()
         
-        # Update API URL and Auth URL based on mode and import type
+        # Show/hide environment selector
+        if hasattr(self, 'environment_frame'):
+            if mode == "Engage":
+                self.environment_frame.pack(fill=tk.X, pady=2, before=self.environment_frame.master.winfo_children()[2])
+            else:
+                self.environment_frame.pack_forget()
+        
+        # Update URLs and credentials
+        self.update_urls_for_mode_and_environment()
+        
+        # Show/hide mode-specific auth fields
         if mode == "C4R":
-            if import_type == "customers":
-                self.api_url.set("https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers")
-            else:  # households
-                self.api_url.set("https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/households")
-            self.auth_url.set("https://prod.cse.cloud4retail.co/auth-service/tenants/001/oauth/token")
-            self.username.set("coop_sweden")
-            self.password.set("coopsverige123")
-            # Show/hide mode-specific fields
             self.gk_passport_label.grid()
             self.auto_passport_entry.grid()
             self.gk_passport_note.grid()
@@ -383,14 +395,6 @@ class BulkImportGUI:
             self.client_id_entry.grid_remove()
             self.client_id_note.grid_remove()
         else:  # Engage
-            if import_type == "customers":
-                self.api_url.set("https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/customers")
-            else:  # households
-                self.api_url.set("https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/households")
-            self.auth_url.set("https://dev.cse.gk-engage.co/auth/realms/001-operators/protocol/openid-connect/token")
-            self.username.set("CoopTechUser")
-            self.password.set("Usygw&B#$n)3d_Sd")
-            # Show/hide mode-specific fields
             self.gk_passport_label.grid_remove()
             self.auto_passport_entry.grid_remove()
             self.gk_passport_note.grid_remove()
@@ -402,22 +406,51 @@ class BulkImportGUI:
         if hasattr(self, 'log_text'):
             self.log_message(f"Switched to {mode} mode")
     
-    def on_import_type_change(self):
-        """Handle import type change (customers vs households)"""
-        import_type = self.import_type.get()
+    def on_environment_change(self):
+        """Handle environment change (dev vs prod) for Engage mode"""
+        self.update_urls_for_mode_and_environment()
+        if hasattr(self, 'log_text'):
+            env = self.environment.get()
+            self.log_message(f"Switched to {env} environment")
+    
+    def update_urls_for_mode_and_environment(self):
+        """Update API URL, Auth URL, and credentials based on mode, environment, and import type"""
         mode = self.mode.get()
+        environment = self.environment.get()
+        import_type = self.import_type.get()
         
-        # Update API URL based on import type
         if mode == "C4R":
             if import_type == "customers":
                 self.api_url.set("https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/customers")
             else:  # households
                 self.api_url.set("https://prod.cse.cloud4retail.co/customer-profile-service/tenants/001/services/rest/customers-import/v1/households")
+            self.auth_url.set("https://prod.cse.cloud4retail.co/auth-service/tenants/001/oauth/token")
+            self.username.set("coop_sweden")
+            self.password.set("coopsverige123")
         else:  # Engage
+            # Determine base URL based on environment
+            base_url = "https://prod.cse.gk-engage.co" if environment == "prod" else "https://dev.cse.gk-engage.co"
+            
             if import_type == "customers":
-                self.api_url.set("https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/customers")
+                self.api_url.set(f"{base_url}/api/customer-profile/services/rest/customers-import/v1/customers")
             else:  # households
-                self.api_url.set("https://dev.cse.gk-engage.co/api/customer-profile/services/rest/customers-import/v1/households")
+                self.api_url.set(f"{base_url}/api/customer-profile/services/rest/customers-import/v1/households")
+            
+            self.auth_url.set(f"{base_url}/auth/realms/001-operators/protocol/openid-connect/token")
+            self.username.set("CoopTechUser")
+            
+            # Set password based on environment
+            if environment == "prod":
+                self.password.set("x=w:$PDQ}0U6(Y&F")
+            else:
+                self.password.set("Usygw&B#$n)3d_Sd")
+    
+    def on_import_type_change(self):
+        """Handle import type change (customers vs households)"""
+        import_type = self.import_type.get()
+        
+        # Update URLs for new import type
+        self.update_urls_for_mode_and_environment()
         
         # Update Failed Items tab name dynamically
         if hasattr(self, 'notebook') and hasattr(self, 'failed_items_frame'):
@@ -839,6 +872,7 @@ class BulkImportGUI:
 
                 importer = BulkCustomerImporter(
                     mode=self.mode.get(),
+                    environment=self.environment.get(),
                     import_type=self.import_type.get(),
                     api_url=self.api_url.get(),
                     auth_url=self.auth_url.get(),
@@ -856,6 +890,7 @@ class BulkImportGUI:
 
                 importer = BulkCustomerImporter(
                     mode=self.mode.get(),
+                    environment=self.environment.get(),
                     import_type=self.import_type.get(),
                     api_url=self.api_url.get(),
                     auth_token=self.auth_token.get(),
@@ -974,6 +1009,7 @@ class BulkImportGUI:
             if self.use_auto_auth.get():
                 importer = BulkCustomerImporter(
                     mode=self.mode.get(),
+                    environment=self.environment.get(),
                     import_type=self.import_type.get(),
                     api_url=self.api_url.get(),
                     auth_url=self.auth_url.get(),
@@ -992,6 +1028,7 @@ class BulkImportGUI:
             else:
                 importer = BulkCustomerImporter(
                     mode=self.mode.get(),
+                    environment=self.environment.get(),
                     import_type=self.import_type.get(),
                     api_url=self.api_url.get(),
                     auth_token=self.auth_token.get(),

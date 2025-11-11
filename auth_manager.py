@@ -18,6 +18,7 @@ class AuthenticationManager:
     
     def __init__(self,
                  mode: str = "C4R",  # "C4R" or "Engage"
+                 environment: str = "dev",  # "dev" or "prod" (for Engage mode)
                  username: str = None,
                  password: str = None,
                  gk_passport: str = "1.1:CiMg46zV+88yKOOMxZPwMjIDMDAxOg5idXNpbmVzc1VuaXRJZBIKCAISBnVzZXJJZBoSCAIaCGNsaWVudElkIgR3c0lkIhoaGGI6Y3VzdC5jdXN0b21lci5pbXBvcnRlcg==",
@@ -29,6 +30,7 @@ class AuthenticationManager:
         
         Args:
             mode: Authentication mode - "C4R" (Cloud4Retail) or "Engage"
+            environment: Environment - "dev" or "prod" (Engage mode only)
             username: OAuth username
             password: OAuth password  
             gk_passport: GK-Passport header value (C4R only)
@@ -37,6 +39,7 @@ class AuthenticationManager:
             client_id: Client ID for Engage mode
         """
         self.mode = mode.upper()
+        self.environment = environment.lower()
         
         # Set defaults based on mode
         if self.mode == "C4R":
@@ -47,9 +50,16 @@ class AuthenticationManager:
             self.gk_passport = gk_passport
             self.client_id = None
         elif self.mode == "ENGAGE":
-            self.username = username or "CoopTechUser"
-            self.password = password or "Usygw&B#$n)3d_Sd"
-            self.auth_url = auth_url or "https://dev.cse.gk-engage.co/auth/realms/001-operators/protocol/openid-connect/token"
+            # Set credentials based on environment
+            if self.environment == "prod":
+                self.username = username or "CoopTechUser"
+                self.password = password or "x=w:$PDQ}0U6(Y&F"
+                self.auth_url = auth_url or "https://prod.cse.gk-engage.co/auth/realms/001-operators/protocol/openid-connect/token"
+            else:  # dev
+                self.username = username or "CoopTechUser"
+                self.password = password or "Usygw&B#$n)3d_Sd"
+                self.auth_url = auth_url or "https://dev.cse.gk-engage.co/auth/realms/001-operators/protocol/openid-connect/token"
+            
             self.client_id = client_id or "employee-hub"
             self.basic_auth = None
             self.gk_passport = None  # Engage doesn't use GK-Passport
